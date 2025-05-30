@@ -5,6 +5,7 @@ import csv
 from glob import glob
 import pandas as pd
 from datetime import datetime, timedelta
+import json
 
 # Configuration
 DEBUG = True  # Set to True to enable debug printing
@@ -138,7 +139,7 @@ def extract_trades_from_pdf(file_path):
                                     "Side": trade_type
                                 }
                                 
-                                debug_print(f"    Parsed Trade: {trade_data['Side']} {trade_data['Quantity']} "
+                                debug_print(f"    Parsed Trade: {'LONG' if trade_data['Side'] == 'BUY' else 'SHORT'} {trade_data['Quantity']} "
                                           f"{trade_data['Symbol']} @ ${trade_data['Price']:.2f} "
                                           f"({'Option' if is_option else 'Stock'})")
                                 
@@ -192,9 +193,9 @@ def extract_trades_from_pdf(file_path):
             print("\n  📊 PDF Summary:")
             pdf_total = 0
             
-            # Print BUY summary
+            # Print LONG summary
             if buys:
-                print("\n  🟢 BUYS:")
+                print("\n  🟢 LONG:")  # Changed from BUYS
                 print("  Symbol  Shares    Avg Price    Total Value    Time")
                 print("  " + "-" * 55)
                 
@@ -208,9 +209,9 @@ def extract_trades_from_pdf(file_path):
                 
                 print("  " + "-" * 55)
             
-            # Print SELL summary
+            # Print SHORT summary
             if sells:
-                print("\n  🔴 SELLS:")
+                print("\n  🔴 SHORT:")  # Changed from SELLS
                 print("  Symbol  Shares    Avg Price    Total Value    Time")
                 print("  " + "-" * 55)
                 
@@ -236,9 +237,25 @@ def extract_trades_from_pdf(file_path):
 def gather_all_trades(folder):
     all_trades = []
     pdf_files = glob(os.path.join(folder, "DailyTradeReport.*.pdf"))
+    processed_files = manage_processed_files(folder, check_only=True)
+    
+    new_files = False
     for pdf in pdf_files:
+        filename = os.path.basename(pdf)
+        if filename in processed_files:
+            debug_print(f"⏭️  Skipping previously processed file: {filename}")
+            continue
+            
+        new_files = True
         trades = extract_trades_from_pdf(pdf)
         all_trades.extend(trades)
+        
+        # Mark file as processed
+        manage_processed_files(folder, filename)
+    
+    if not new_files:
+        print("\n📝 No new trade reports to process")
+    
     return all_trades
 
 def export_to_csv(trades, output_file, folder_path):
@@ -264,6 +281,8 @@ def consolidate_trades(trades):
     consolidated = {}
     
     for trade in trades:
+        # Update trade side before creating key
+        trade['Side'] = 'LONG' if trade['Side'] == 'BUY' else 'SHORT'
         key = (trade['Symbol'], trade['Date'], trade['Side'])
         
         if key in consolidated:
@@ -274,13 +293,18 @@ def consolidate_trades(trades):
                 (existing['Quantity'] * existing['Price'] + 
                  trade['Quantity'] * trade['Price']) / total_qty
             )
-            # Keep earliest time
-            earliest_time = min(existing['Time'], trade['Time'])
+            
+            # For SHORT orders, keep the latest time
+            # For LONG orders, keep the earliest time
+            if trade['Side'] == 'SHORT':
+                time_to_use = max(existing['Time'], trade['Time'])
+            else:
+                time_to_use = min(existing['Time'], trade['Time'])
             
             consolidated[key] = {
                 'Symbol': trade['Symbol'],
                 'Date': trade['Date'],
-                'Time': earliest_time,
+                'Time': time_to_use,
                 'Side': trade['Side'],
                 'Quantity': total_qty,
                 'Price': weighted_price
@@ -302,7 +326,8 @@ def check_open_positions(folder_path):
         if not open_positions.empty:
             print("\n📈 Open Positions (Detail):")
             for _, row in open_positions.iterrows():
-                print(f"  • {row['Symbol']}: {row['Qty']} shares @ ${row['Entry Price']:.2f} "
+                position_type = "LONG" if row['Side'] in ['BUY', 'LONG'] else "SHORT"
+                print(f"  • {row['Symbol']}: {row['Qty']} shares ({position_type}) @ ${row['Entry Price']:.2f} "
                       f"({row['Entry Date']} {row['Entry Time']})")
             
             # Create summary by symbol
@@ -361,56 +386,124 @@ def check_open_positions(folder_path):
         return []
 
 def match_trades_fifo(df_master, consolidated_trades):
-    """Match SELL trades to open BUY positions using FIFO method"""
+    """Match trades using FIFO method, handling both long and short positions"""
     df_new = df_master.copy()
     
-    # Sort trades by date and time to ensure proper FIFO matching
+    # Ensure numeric types
+    df_new['Qty'] = pd.to_numeric(df_new['Qty'])
+    df_new['Entry Price'] = pd.to_numeric(df_new['Entry Price'])
+    
+    # Sort trades chronologically
     consolidated_trades = sorted(consolidated_trades, key=lambda x: (x['Date'], x['Time']))
     
     for trade in consolidated_trades:
-        if trade['Side'] == "SELL":
-            symbol = trade['Symbol']
-            sell_qty = trade['Quantity']
-            remaining_sell_qty = sell_qty
-            sell_price = trade['Price']
-            sell_time = trade['Time']
-            sell_date = trade['Date']
-            
-            # Get open positions for this symbol, sorted by entry date and time (FIFO)
-            open_positions = df_new[
+        trade['Side'] = 'LONG' if trade['Side'] == 'BUY' else 'SHORT'
+        symbol = trade['Symbol']
+        qty = abs(trade['Quantity'])
+        price = trade['Price']
+        time = trade['Time']
+        date = trade['Date']
+        
+        if trade['Side'] == "SHORT":
+            # Look for matching LONG positions to close
+            mask = (
                 (df_new['Symbol'] == symbol) & 
-                ((df_new['Exit Qty'].isna()) | (df_new['Exit Qty'] == 0)) &  # Only get positions without exits
-                (df_new['Side'] == 'BUY') &      # Only match against BUY positions
-                (pd.to_datetime(df_new['Entry Date']) <= pd.to_datetime(sell_date))  # Only match against earlier or same-day positions
-            ].sort_values(['Entry Date', 'Entry Time'])
+                (df_new['Side'] == 'LONG') &
+                (df_new['Exit Qty'].isna()) &  # Only get unfilled positions
+                (pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time']) 
+                 <= pd.to_datetime(date + ' ' + time))
+            )
+            
+            open_positions = df_new[mask].sort_values(['Entry Date', 'Entry Time'])
+            remaining_short_qty = qty
             
             if not open_positions.empty:
                 for idx in open_positions.index:
-                    if remaining_sell_qty <= 0:
+                    if remaining_short_qty <= 0:
                         break
                         
-                    position = open_positions.loc[idx]
-                    available_qty = position['Qty']
-                    if pd.notna(position['Exit Qty']):
-                        available_qty -= position['Exit Qty']
+                    position_qty = df_new.at[idx, 'Qty']
                     
-                    if available_qty <= 0:
-                        continue
-                        
-                    if remaining_sell_qty >= available_qty:
+                    if remaining_short_qty >= position_qty:
                         # Full position exit
-                        df_new.at[idx, 'Exit Qty'] = available_qty
-                        df_new.at[idx, 'Exit Price'] = sell_price
-                        df_new.at[idx, 'Exit Time'] = sell_time
-                        df_new.at[idx, 'Exit Date'] = sell_date
-                        remaining_sell_qty -= available_qty
+                        df_new.at[idx, 'Exit Qty'] = position_qty
+                        df_new.at[idx, 'Exit Price'] = price
+                        df_new.at[idx, 'Exit Time'] = time
+                        df_new.at[idx, 'Exit Date'] = date
+                        remaining_short_qty -= position_qty
                     else:
                         # Partial position exit
-                        df_new.at[idx, 'Exit Qty'] = remaining_sell_qty
-                        df_new.at[idx, 'Exit Price'] = sell_price
-                        df_new.at[idx, 'Exit Time'] = sell_time
-                        df_new.at[idx, 'Exit Date'] = sell_date
-                        remaining_sell_qty = 0
+                        df_new.at[idx, 'Exit Qty'] = remaining_short_qty
+                        df_new.at[idx, 'Exit Price'] = price
+                        df_new.at[idx, 'Exit Time'] = time
+                        df_new.at[idx, 'Exit Date'] = date
+                        remaining_short_qty = 0
+            
+            # If there's remaining quantity after closing LONG positions, create new SHORT position
+            if remaining_short_qty > 0:
+                new_short = {
+                    "Symbol": symbol,
+                    "Qty": remaining_short_qty,
+                    "Side": "SHORT",
+                    "Entry Price": price,
+                    "Entry Time": time,
+                    "Entry Date": date,
+                    "Notes": "Short Position",
+                    "Exit Qty": None,
+                    "Exit Price": None,
+                    "Exit Time": None,
+                    "Exit Date": None
+                }
+                df_new = pd.concat([df_new, pd.DataFrame([new_short])], ignore_index=True)
+                print(f"  📉 New short position: {symbol} {remaining_short_qty} shares @ {price}")
+        
+        else:  # LONG position
+            # First check if this covers any existing SHORT positions
+            mask = (
+                (df_new['Symbol'] == symbol) & 
+                (df_new['Side'] == 'SHORT') &
+                (df_new['Exit Qty'].isna()) &
+                (pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time']) 
+                 <= pd.to_datetime(date + ' ' + time))
+            )
+            
+            short_positions = df_new[mask].sort_values(['Entry Date', 'Entry Time'])
+            remaining_long_qty = qty
+            
+            if not short_positions.empty:
+                for idx in short_positions.index:
+                    if remaining_long_qty <= 0:
+                        break
+                    
+                    short_qty = df_new.at[idx, 'Qty']
+                    exit_qty = min(remaining_long_qty, short_qty)
+                    
+                    df_new.at[idx, 'Exit Qty'] = exit_qty
+                    df_new.at[idx, 'Exit Price'] = price
+                    df_new.at[idx, 'Exit Time'] = time
+                    df_new.at[idx, 'Exit Date'] = date
+                    
+                    remaining_long_qty -= exit_qty
+            
+            # Add remaining as new LONG position
+            if remaining_long_qty > 0:
+                new_long = {
+                    "Symbol": symbol,
+                    "Qty": remaining_long_qty,
+                    "Side": "LONG",
+                    "Entry Price": price,
+                    "Entry Time": time,
+                    "Entry Date": date,
+                    "Notes": "",
+                    "Exit Qty": None,
+                    "Exit Price": None,
+                    "Exit Time": None,
+                    "Exit Date": None
+                }
+                df_new = pd.concat([df_new, pd.DataFrame([new_long])], ignore_index=True)
+    
+    # Clear duplicate Exit columns if they exist
+    df_new = df_new.loc[:, ~df_new.columns.duplicated()]
     
     return df_new
 
@@ -435,14 +528,14 @@ def update_master_sheet(consolidated_trades, folder_path):
                 "Exit Time", "Exit Date"
             ])
         
-        # Prepare new BUY trades for append
+        # Prepare new LONG trades for append
         new_trades = []
         for trade in consolidated_trades:
-            if trade['Side'] == "BUY":
+            if trade['Side'] in ['BUY', 'LONG']:  # Handle both old and new formats
                 new_trade = {
                     "Symbol": trade['Symbol'],
                     "Qty": trade['Quantity'],
-                    "Side": trade['Side'],
+                    "Side": 'LONG',  # Always use LONG here
                     "Entry Price": trade['Price'],
                     "Entry Time": trade['Time'],
                     "Entry Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
@@ -479,6 +572,28 @@ def update_master_sheet(consolidated_trades, folder_path):
     except Exception as e:
         print(f"❌ Error updating master sheet: {str(e)}")
 
+def manage_processed_files(folder_path, pdf_file=None, check_only=False):
+    """Track processed PDF files using a JSON file"""
+    tracking_file = os.path.join(folder_path, "processed_files.json")
+    
+    # Load existing processed files
+    if os.path.exists(tracking_file):
+        with open(tracking_file, 'r') as f:
+            processed_files = json.load(f)
+    else:
+        processed_files = []
+    
+    if check_only:
+        return processed_files
+    
+    # Add new file and save
+    if pdf_file and pdf_file not in processed_files:
+        processed_files.append(pdf_file)
+        with open(tracking_file, 'w') as f:
+            json.dump(processed_files, f, indent=2)
+    
+    return processed_files
+
 def main():
     # Get date input from user, default to test date if empty
     date_input = input("Enter month-year (MM.YYYY) or press Enter for default test date: ").strip()
@@ -498,9 +613,16 @@ def main():
         # Process trades
         all_trades = gather_all_trades(folder_path)
         
+        # Exit if no new trades
+        if not all_trades:
+            print("✅ No updates needed for master sheet")
+            return
+            
+        # Continue with existing code...
         # Consolidate trades
         consolidated_trades = consolidate_trades(all_trades)
-        print(f"\n📊 Consolidated {len(all_trades)} trades into {len(consolidated_trades)} positions")
+        print(f"\n📊 Consolidated {len(all_trades)} trades into {len(consolidated_trades)} positions "
+              f"(LONG/SHORT)")
         
         # Generate output filename with date
         date_obj = datetime.strptime(date_input, "%m.%Y")
