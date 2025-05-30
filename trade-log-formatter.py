@@ -13,6 +13,12 @@ DEBUG = True  # Set to True to enable debug printing
 yesterday = datetime.now() - timedelta(days=1)
 DEFAULT_TEST_DATE = datetime.now().strftime("%m.%Y")
 
+# Add at the top with other configurations
+TEST_MODE = True  # Set to True to use test files
+MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-copy.xlsx"
+MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
+PROCESSED_FILE = "processed_files_test.json" if TEST_MODE else "processed_files.json"
+
 def debug_print(*args, **kwargs):
     """Wrapper for debug printing"""
     if DEBUG:
@@ -317,7 +323,7 @@ def consolidate_trades(trades):
 def check_open_positions(folder_path):
     """Check master copy for open positions and provide summary with totals"""
     try:
-        master_file = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades/master-copy.xlsx"
+        master_file = os.path.join("/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades", MASTER_FILE)
         df = pd.read_excel(master_file)
         
         # Find rows where Exit Qty or Exit Price is empty/NaN
@@ -508,11 +514,12 @@ def match_trades_fifo(df_master, consolidated_trades):
     return df_new
 
 def update_master_sheet(consolidated_trades, folder_path):
-    """Update master balance sheet with new trades after backing up, sorted by date and time"""
+    """Update master balance sheet with new trades after backing up"""
     try:
-        # Define file paths
-        master_file = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades/master-copy.xlsx"
-        backup_file = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades/master-copy-backup.xlsx"
+        # Define file paths using test files if in test mode
+        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        master_file = os.path.join(base_path, MASTER_FILE)
+        backup_file = os.path.join(base_path, MASTER_BACKUP)
         
         # Create backup of current master file
         if os.path.exists(master_file):
@@ -574,7 +581,7 @@ def update_master_sheet(consolidated_trades, folder_path):
 
 def manage_processed_files(folder_path, pdf_file=None, check_only=False):
     """Track processed PDF files using a JSON file"""
-    tracking_file = os.path.join(folder_path, "processed_files.json")
+    tracking_file = os.path.join(folder_path, PROCESSED_FILE)  # Use test file if in test mode
     
     # Load existing processed files
     if os.path.exists(tracking_file):
@@ -594,7 +601,35 @@ def manage_processed_files(folder_path, pdf_file=None, check_only=False):
     
     return processed_files
 
+def reset_test_files(folder_path):
+    """Reset test files before running script"""
+    if TEST_MODE:
+        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        
+        # Reset processed files JSON
+        test_json_path = os.path.join(folder_path, PROCESSED_FILE)
+        with open(test_json_path, 'w') as f:
+            json.dump([], f)
+        print("🔄 Reset processed files tracking")
+        
+        # Create empty test master copy if it doesn't exist
+        test_master_path = os.path.join(base_path, MASTER_FILE)
+        if not os.path.exists(test_master_path):
+            df_empty = pd.DataFrame(columns=[
+                "Symbol", "Qty", "Side", "Entry Price", "Entry Time", 
+                "Entry Date", "Notes", "Exit Qty", "Exit Price", 
+                "Exit Time", "Exit Date"
+            ])
+            df_empty.to_excel(test_master_path, index=False)
+        print("🔄 Reset master copy test file")
+
 def main():
+    # Reset test files if in test mode
+    if TEST_MODE:
+        print("\n🧪 Running in test mode")
+        folder_path = get_folder_path(DEFAULT_TEST_DATE)
+        reset_test_files(folder_path)
+    
     # Get date input from user, default to test date if empty
     date_input = input("Enter month-year (MM.YYYY) or press Enter for default test date: ").strip()
     
