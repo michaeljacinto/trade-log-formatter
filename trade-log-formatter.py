@@ -241,8 +241,14 @@ def extract_trades_from_pdf(file_path):
     return trades
 
 def gather_all_trades(folder):
+    """Gather trades from all PDFs in chronological order"""
     all_trades = []
+    # Get all PDF files and sort them by date in filename
     pdf_files = glob(os.path.join(folder, "DailyTradeReport.*.pdf"))
+    
+    # Sort PDFs by date in filename (format: DailyTradeReport.YYYYMMDD.pdf)
+    pdf_files.sort(key=lambda x: os.path.basename(x).split('.')[1])
+    
     processed_files = manage_processed_files(folder, check_only=True)
     
     new_files = False
@@ -253,6 +259,7 @@ def gather_all_trades(folder):
             continue
             
         new_files = True
+        debug_print(f"\n📅 Processing {filename}")
         trades = extract_trades_from_pdf(pdf)
         all_trades.extend(trades)
         
@@ -305,7 +312,7 @@ def consolidate_trades(trades):
             if trade['Side'] == 'SHORT':
                 time_to_use = max(existing['Time'], trade['Time'])
             else:
-                time_to_use = min(existing['Time'], trade['Time'])
+                time_to_use = min(existing['earliest_time'], trade['Time'])
             
             consolidated[key] = {
                 'Symbol': trade['Symbol'],
@@ -320,132 +327,171 @@ def consolidate_trades(trades):
     
     return list(consolidated.values())
 
-def check_open_positions(folder_path):
-    """Check master copy for open positions and provide summary with totals"""
+def check_open_positions(folder_path, new_trades=None):
+    """Check master copy for open positions and maintain running balance"""
     try:
         master_file = os.path.join("/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades", MASTER_FILE)
         df = pd.read_excel(master_file)
         
-        # Find rows where Exit Qty or Exit Price is empty/NaN
-        open_positions = df[df['Exit Qty'].isna() | df['Exit Price'].isna()]
+        # Initialize positions dictionary
+        positions = {}
         
-        if not open_positions.empty:
-            print("\n📈 Open Positions (Detail):")
-            for _, row in open_positions.iterrows():
-                position_type = "LONG" if row['Side'] in ['BUY', 'LONG'] else "SHORT"
-                print(f"  • {row['Symbol']}: {row['Qty']} shares ({position_type}) @ ${row['Entry Price']:.2f} "
-                      f"({row['Entry Date']} {row['Entry Time']})")
+        # First process existing positions from master file
+        for _, row in df.iterrows():
+            symbol = row['Symbol']
+            side = row['Side']
+            qty = row['Qty']
+            price = row['Entry Price']
+            date = pd.to_datetime(row['Entry Date'])
+            exit_qty = row['Exit Qty'] if pd.notna(row['Exit Qty']) else 0
             
-            # Create summary by symbol
-            summary = {}
-            grand_total = 0
+            if symbol not in positions:
+                positions[symbol] = {
+                    'qty': 0,
+                    'total_cost': 0,
+                    'date': date,
+                    'trades': []
+                }
             
-            for _, row in open_positions.iterrows():
-                symbol = row['Symbol']
-                qty = row['Qty']
-                price = row['Entry Price']
-                date = pd.to_datetime(row['Entry Date'])
+            # Update position based on side and exit quantity
+            if side == 'LONG':
+                positions[symbol]['qty'] += (qty - exit_qty)
+                positions[symbol]['total_cost'] += (qty - exit_qty) * price
+            else:  # SHORT
+                positions[symbol]['qty'] -= (qty - exit_qty)
+                positions[symbol]['total_cost'] -= (qty - exit_qty) * price
+            
+            positions[symbol]['date'] = min(positions[symbol]['date'], date)
+            positions[symbol]['trades'].append({
+                'side': side,
+                'qty': qty,
+                'price': price,
+                'date': date,
+                'exit_qty': exit_qty
+            })
+        
+        # Process any new trades if provided
+        if new_trades:
+            for trade in new_trades:
+                symbol = trade['Symbol']
+                side = trade['Side']
+                qty = trade['Quantity']
+                price = trade['Price']
+                date = pd.to_datetime(trade['Date'])
                 
-                if symbol in summary:
-                    existing = summary[symbol]
-                    total_qty = existing['qty'] + qty
-                    weighted_price = (existing['qty'] * existing['price'] + qty * price) / total_qty
-                    earliest_date = min(existing['date'], date)
-                    
-                    summary[symbol] = {
-                        'qty': total_qty,
-                        'price': weighted_price,
-                        'date': earliest_date,
-                        'total_value': total_qty * weighted_price
-                    }
-                else:
-                    summary[symbol] = {
-                        'qty': qty,
-                        'price': price,
+                if symbol not in positions:
+                    positions[symbol] = {
+                        'qty': 0,
+                        'total_cost': 0,
                         'date': date,
-                        'total_value': qty * price
+                        'trades': []
                     }
-            
-            # Print summary with position values
-            print("\n📊 Open Positions Summary:")
-            print("  Symbol  Shares    Avg Price    Total Value    Since")
-            print("  " + "-" * 55)
-            
-            for symbol, data in summary.items():
-                position_value = data['total_value']
+                
+                # Update running balance
+                if side in ['LONG', 'BUY']:
+                    positions[symbol]['qty'] += qty
+                    positions[symbol]['total_cost'] += qty * price
+                else:  # SHORT or SELL
+                    positions[symbol]['qty'] -= qty
+                    positions[symbol]['total_cost'] -= qty * price
+                
+                positions[symbol]['trades'].append({
+                    'side': side,
+                    'qty': qty,
+                    'price': price,
+                    'date': date,
+                    'exit_qty': 0
+                })
+        
+        # Print running balances
+        print("\n📊 Current Position Balances:")
+        print("  Symbol  Net Pos    Avg Price    Total Value    Since")
+        print("  " + "-" * 55)
+        
+        grand_total = 0
+        for symbol, data in positions.items():
+            if data['qty'] != 0:  # Only show active positions
+                avg_price = abs(data['total_cost'] / data['qty']) if data['qty'] != 0 else 0
+                position_value = data['total_cost']
                 grand_total += position_value
-                print(f"  {symbol:6} {data['qty']:8.0f} @ ${data['price']:8,.2f} = ${position_value:11,.2f}  {data['date'].strftime('%Y-%m-%d')}")
-            
-            print("  " + "-" * 55)
-            print(f"  Total Portfolio Value: ${grand_total:,.2f}")
-            
-            return open_positions.to_dict('records')
-        else:
-            print("\n✅ No open positions found")
-            return []
+                
+                print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${position_value:11,.2f}  "
+                      f"{data['date'].strftime('%Y-%m-%d')}")
+        
+        print("  " + "-" * 55)
+        print(f"  Total Portfolio Value: ${grand_total:,.2f}")
+        
+        return positions
             
     except FileNotFoundError:
         print(f"\n⚠️  Master copy not found: {master_file}")
-        return []
+        return {}
     except Exception as e:
         print(f"\n❌ Error reading master copy: {str(e)}")
-        return []
+        return {}
 
 def match_trades_fifo(df_master, consolidated_trades):
-    """Match trades using FIFO method, handling both long and short positions"""
+    """Match trades using FIFO method and maintain running balances"""
     df_new = df_master.copy()
     
-    # Ensure numeric types
-    df_new['Qty'] = pd.to_numeric(df_new['Qty'])
-    df_new['Entry Price'] = pd.to_numeric(df_new['Entry Price'])
+    # Initialize running positions dictionary
+    running_positions = {}
+    
+    # First, load existing positions from master sheet
+    for idx, row in df_new.iterrows():
+        symbol = row['Symbol']
+        if symbol not in running_positions:
+            running_positions[symbol] = []
+            
+        # Add position to running balance
+        position = {
+            'idx': idx,
+            'qty': row['Qty'],
+            'remaining_qty': row['Qty'] - (row['Exit Qty'] if pd.notna(row['Exit Qty']) else 0),
+            'price': row['Entry Price'],
+            'time': row['Entry Time'],
+            'date': row['Entry Date'],
+            'side': row['Side']
+        }
+        running_positions[symbol].append(position)
     
     # Sort trades chronologically
     consolidated_trades = sorted(consolidated_trades, key=lambda x: (x['Date'], x['Time']))
     
     for trade in consolidated_trades:
-        trade['Side'] = 'LONG' if trade['Side'] == 'BUY' else 'SHORT'
         symbol = trade['Symbol']
         qty = abs(trade['Quantity'])
         price = trade['Price']
         time = trade['Time']
         date = trade['Date']
+        side = 'LONG' if trade['Side'] in ['BUY', 'LONG'] else 'SHORT'
         
-        if trade['Side'] == "SHORT":
-            # Look for matching LONG positions to close
-            mask = (
-                (df_new['Symbol'] == symbol) & 
-                (df_new['Side'] == 'LONG') &
-                (df_new['Exit Qty'].isna()) &  # Only get unfilled positions
-                (pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time']) 
-                 <= pd.to_datetime(date + ' ' + time))
-            )
-            
-            open_positions = df_new[mask].sort_values(['Entry Date', 'Entry Time'])
+        if side == 'SHORT':
+            # Check for existing LONG positions to offset
             remaining_short_qty = qty
             
-            if not open_positions.empty:
-                for idx in open_positions.index:
-                    if remaining_short_qty <= 0:
-                        break
+            if symbol in running_positions:
+                for pos in running_positions[symbol]:
+                    if pos['side'] == 'LONG' and pos['remaining_qty'] > 0:
+                        # Calculate how much to offset
+                        offset_qty = min(remaining_short_qty, pos['remaining_qty'])
                         
-                    position_qty = df_new.at[idx, 'Qty']
-                    
-                    if remaining_short_qty >= position_qty:
-                        # Full position exit
-                        df_new.at[idx, 'Exit Qty'] = position_qty
-                        df_new.at[idx, 'Exit Price'] = price
-                        df_new.at[idx, 'Exit Time'] = time
-                        df_new.at[idx, 'Exit Date'] = date
-                        remaining_short_qty -= position_qty
-                    else:
-                        # Partial position exit
-                        df_new.at[idx, 'Exit Qty'] = remaining_short_qty
-                        df_new.at[idx, 'Exit Price'] = price
-                        df_new.at[idx, 'Exit Time'] = time
-                        df_new.at[idx, 'Exit Date'] = date
-                        remaining_short_qty = 0
+                        # Update exit information in master sheet
+                        df_new.at[pos['idx'], 'Exit Qty'] = (
+                            df_new.at[pos['idx'], 'Exit Qty'] if pd.notna(df_new.at[pos['idx'], 'Exit Qty']) else 0
+                        ) + offset_qty
+                        df_new.at[pos['idx'], 'Exit Price'] = price
+                        df_new.at[pos['idx'], 'Exit Time'] = time
+                        df_new.at[pos['idx'], 'Exit Date'] = date
+                        
+                        # Update running position
+                        pos['remaining_qty'] -= offset_qty
+                        remaining_short_qty -= offset_qty
+                        
+                        if remaining_short_qty == 0:
+                            break
             
-            # If there's remaining quantity after closing LONG positions, create new SHORT position
+            # If there's still remaining short quantity, create new SHORT position
             if remaining_short_qty > 0:
                 new_short = {
                     "Symbol": symbol,
@@ -461,37 +507,43 @@ def match_trades_fifo(df_master, consolidated_trades):
                     "Exit Date": None
                 }
                 df_new = pd.concat([df_new, pd.DataFrame([new_short])], ignore_index=True)
-                print(f"  📉 New short position: {symbol} {remaining_short_qty} shares @ {price}")
+                
+                # Add to running positions
+                if symbol not in running_positions:
+                    running_positions[symbol] = []
+                running_positions[symbol].append({
+                    'idx': len(df_new) - 1,
+                    'qty': remaining_short_qty,
+                    'remaining_qty': remaining_short_qty,
+                    'price': price,
+                    'time': time,
+                    'date': date,
+                    'side': 'SHORT'
+                })
         
         else:  # LONG position
-            # First check if this covers any existing SHORT positions
-            mask = (
-                (df_new['Symbol'] == symbol) & 
-                (df_new['Side'] == 'SHORT') &
-                (df_new['Exit Qty'].isna()) &
-                (pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time']) 
-                 <= pd.to_datetime(date + ' ' + time))
-            )
-            
-            short_positions = df_new[mask].sort_values(['Entry Date', 'Entry Time'])
+            # Similar logic for LONG positions offsetting existing SHORT positions
             remaining_long_qty = qty
             
-            if not short_positions.empty:
-                for idx in short_positions.index:
-                    if remaining_long_qty <= 0:
-                        break
-                    
-                    short_qty = df_new.at[idx, 'Qty']
-                    exit_qty = min(remaining_long_qty, short_qty)
-                    
-                    df_new.at[idx, 'Exit Qty'] = exit_qty
-                    df_new.at[idx, 'Exit Price'] = price
-                    df_new.at[idx, 'Exit Time'] = time
-                    df_new.at[idx, 'Exit Date'] = date
-                    
-                    remaining_long_qty -= exit_qty
+            if symbol in running_positions:
+                for pos in running_positions[symbol]:
+                    if pos['side'] == 'SHORT' and pos['remaining_qty'] > 0:
+                        offset_qty = min(remaining_long_qty, pos['remaining_qty'])
+                        
+                        df_new.at[pos['idx'], 'Exit Qty'] = (
+                            df_new.at[pos['idx'], 'Exit Qty'] if pd.notna(df_new.at[pos['idx'], 'Exit Qty']) else 0
+                        ) + offset_qty
+                        df_new.at[pos['idx'], 'Exit Price'] = price
+                        df_new.at[pos['idx'], 'Exit Time'] = time
+                        df_new.at[pos['idx'], 'Exit Date'] = date
+                        
+                        pos['remaining_qty'] -= offset_qty
+                        remaining_long_qty -= offset_qty
+                        
+                        if remaining_long_qty == 0:
+                            break
             
-            # Add remaining as new LONG position
+            # Add remaining long quantity as new position
             if remaining_long_qty > 0:
                 new_long = {
                     "Symbol": symbol,
@@ -507,16 +559,28 @@ def match_trades_fifo(df_master, consolidated_trades):
                     "Exit Date": None
                 }
                 df_new = pd.concat([df_new, pd.DataFrame([new_long])], ignore_index=True)
+                
+                if symbol not in running_positions:
+                    running_positions[symbol] = []
+                running_positions[symbol].append({
+                    'idx': len(df_new) - 1,
+                    'qty': remaining_long_qty,
+                    'remaining_qty': remaining_long_qty,
+                    'price': price,
+                    'time': time,
+                    'date': date,
+                    'side': 'LONG'
+                })
     
-    # Clear duplicate Exit columns if they exist
-    df_new = df_new.loc[:, ~df_new.columns.duplicated()]
+    # Sort the final dataframe by date and time
+    df_new['datetime'] = pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time'])
+    df_new = df_new.sort_values('datetime').drop('datetime', axis=1)
     
     return df_new
 
 def update_master_sheet(consolidated_trades, folder_path):
     """Update master balance sheet with new trades after backing up"""
     try:
-        # Define file paths using test files if in test mode
         base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
         master_file = os.path.join(base_path, MASTER_FILE)
         backup_file = os.path.join(base_path, MASTER_BACKUP)
@@ -528,21 +592,35 @@ def update_master_sheet(consolidated_trades, folder_path):
             df_master.to_excel(backup_file, index=False)
             print(f"✅ Backup created: master-copy-backup.xlsx")
         else:
-            # Create new master file with headers if it doesn't exist
+            # Create new master file with headers
             df_master = pd.DataFrame(columns=[
                 "Symbol", "Qty", "Side", "Entry Price", "Entry Time", 
                 "Entry Date", "Notes", "Exit Qty", "Exit Price", 
                 "Exit Time", "Exit Date"
             ])
         
-        # Prepare new LONG trades for append
+        # Track unique trades to prevent duplication
+        unique_trades = set()
         new_trades = []
+        
         for trade in consolidated_trades:
-            if trade['Side'] in ['BUY', 'LONG']:  # Handle both old and new formats
+            # Create unique key for trade
+            trade_key = (
+                trade['Symbol'],
+                trade['Quantity'],
+                trade['Side'],
+                trade['Price'],
+                trade['Time'],
+                trade['Date']
+            )
+            
+            # Only process if we haven't seen this trade before
+            if trade_key not in unique_trades and trade['Side'] in ['BUY', 'LONG']:
+                unique_trades.add(trade_key)
                 new_trade = {
                     "Symbol": trade['Symbol'],
                     "Qty": trade['Quantity'],
-                    "Side": 'LONG',  # Always use LONG here
+                    "Side": 'LONG',
                     "Entry Price": trade['Price'],
                     "Entry Time": trade['Time'],
                     "Entry Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
@@ -555,22 +633,23 @@ def update_master_sheet(consolidated_trades, folder_path):
                 new_trades.append(new_trade)
         
         if new_trades:
-            # Convert new trades to DataFrame and sort
+            # Convert new trades to DataFrame
             df_new = pd.DataFrame(new_trades)
+            
+            # Sort by date and time
             df_new['datetime'] = pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time'])
             df_new = df_new.sort_values('datetime')
             df_new = df_new.drop('datetime', axis=1)
             
-            # Append new BUY trades
+            # Append new trades
             df_master = pd.concat([df_master, df_new], ignore_index=True)
         
         # Match SELL trades to open positions using FIFO
         df_master = match_trades_fifo(df_master, consolidated_trades)
         
-        # Sort entire master sheet by entry date/time
+        # Final sort
         df_master['datetime'] = pd.to_datetime(df_master['Entry Date'] + ' ' + df_master['Entry Time'])
-        df_master = df_master.sort_values('datetime')
-        df_master = df_master.drop('datetime', axis=1)
+        df_master = df_master.sort_values('datetime').drop('datetime', axis=1)
         
         # Save updated master file
         df_master.to_excel(master_file, index=False)
@@ -652,12 +731,12 @@ def main():
         if not all_trades:
             print("✅ No updates needed for master sheet")
             return
-            
-        # Continue with existing code...
+        
         # Consolidate trades
         consolidated_trades = consolidate_trades(all_trades)
-        print(f"\n📊 Consolidated {len(all_trades)} trades into {len(consolidated_trades)} positions "
-              f"(LONG/SHORT)")
+        
+        # Update running balances with new trades
+        check_open_positions(folder_path, consolidated_trades)
         
         # Generate output filename with date
         date_obj = datetime.strptime(date_input, "%m.%Y")
