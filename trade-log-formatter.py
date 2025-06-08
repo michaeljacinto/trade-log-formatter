@@ -19,6 +19,7 @@ DEFAULT_TEST_DATE = "04.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
 MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-trades.xlsx"
 MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
 PROCESSED_FILE = "processed_files_test.json" if TEST_MODE else "processed_files.json"
+BASE_PATH = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
 
 def debug_print(*args, **kwargs):
     """Wrapper for debug printing"""
@@ -32,11 +33,8 @@ def get_folder_path(date_str):
         target_date = datetime.strptime(date_str, "%m.%Y")
         target_folder = target_date.strftime("%m.%Y")
         
-        # Get base directory
-        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
-        
         # Look for exact month folder
-        folder_path = os.path.join(base_path, target_folder)
+        folder_path = os.path.join(BASE_PATH, target_folder)
         
         if os.path.exists(folder_path) and os.path.isdir(folder_path):
             debug_print(f"Found matching folder: {target_folder}")
@@ -521,9 +519,9 @@ def match_trades_fifo(df_master, consolidated_trades):
 def update_master_sheet(consolidated_trades, folder_path):
     """Update master balance sheet with new trades after backing up"""
     try:
-        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
-        master_file = os.path.join(base_path, MASTER_FILE)
-        backup_file = os.path.join(base_path, MASTER_BACKUP)
+        BASE_PATH = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        master_file = os.path.join(BASE_PATH, MASTER_FILE)
+        backup_file = os.path.join(BASE_PATH, MASTER_BACKUP)
         
         # Create backup of current master file
         if os.path.exists(master_file):
@@ -811,7 +809,7 @@ def manage_processed_files(folder_path, pdf_file=None, check_only=False):
 def reset_test_files(folder_path):
     """Reset test files before running script"""
     if TEST_MODE:
-        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        BASE_PATH = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
         
         # Reset processed files JSON
         test_json_path = os.path.join(folder_path, PROCESSED_FILE)
@@ -820,7 +818,7 @@ def reset_test_files(folder_path):
         print("🔄 Reset processed files tracking")
         
         # Create empty test master copy if it doesn't exist
-        test_master_path = os.path.join(base_path, MASTER_FILE)
+        test_master_path = os.path.join(BASE_PATH, MASTER_FILE)
         if not os.path.exists(test_master_path):
             df_empty = pd.DataFrame(columns=[
                 "Symbol", "Qty", "Side", "Entry Price", "Entry Time", 
@@ -833,9 +831,9 @@ def reset_test_files(folder_path):
 def reset_master_sheet():
     """Reset all spreadsheets and processed files tracking"""
     try:
-        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
-        master_file = os.path.join(base_path, MASTER_FILE)
-        backup_file = os.path.join(base_path, MASTER_BACKUP)
+        BASE_PATH = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        master_file = os.path.join(BASE_PATH, MASTER_FILE)
+        backup_file = os.path.join(BASE_PATH, MASTER_BACKUP)
         
         print(f"\n🔄 Resetting all spreadsheets and processed files...")
         
@@ -849,7 +847,7 @@ def reset_master_sheet():
             
             # Save backup with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            reset_backup = os.path.join(base_path, f"master_pre_reset_{timestamp}.xlsx")
+            reset_backup = os.path.join(BASE_PATH, f"master_pre_reset_{timestamp}.xlsx")
             with pd.ExcelWriter(reset_backup, engine='openpyxl') as writer:
                 for sheet_name, df in all_sheets.items():
                     df.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -878,14 +876,14 @@ def reset_master_sheet():
         
         # Reset all processed_files.json in subdirectories
         reset_count = 0
-        for root, dirs, files in os.walk(base_path):
+        for root, dirs, files in os.walk(BASE_PATH):
             processed_file = os.path.join(root, "processed_files.json")
             if os.path.exists(processed_file):
                 # Clear the processed files list
                 with open(processed_file, 'w') as f:
                     json.dump([], f, indent=2)
                 reset_count += 1
-                rel_path = os.path.relpath(root, base_path)
+                rel_path = os.path.relpath(root, BASE_PATH)
                 print(f"   📂 Reset processed files in: {rel_path}")
         
         # Remove backup file if it exists
