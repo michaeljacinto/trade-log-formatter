@@ -1,21 +1,22 @@
-import fitz  # PyMuPDF
-import re
-import os
-import csv
-from glob import glob
 import pandas as pd
-from datetime import datetime, timedelta
+import re
 import json
+import os
+from datetime import datetime, timedelta
+from glob import glob
+import fitz  # PyMuPDF for PDF processing
+import csv
 
 # Configuration
-DEBUG = True  # Set to True to enable debug printing
+DEBUG = False  # Set to True to enable debug printing
 # Set default test date to yesterday
 yesterday = datetime.now() - timedelta(days=1)
-DEFAULT_TEST_DATE = datetime.now().strftime("%m.%Y")
+# DEFAULT_TEST_DATE = datetime.now().strftime("%m.%Y")
 
 # Add at the top with other configurations
-TEST_MODE = True  # Set to True to use test files
-MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-copy.xlsx"
+TEST_MODE = False  # Set to True to use test files
+DEFAULT_TEST_DATE = "04.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
+MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-trades.xlsx"
 MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
 PROCESSED_FILE = "processed_files_test.json" if TEST_MODE else "processed_files.json"
 
@@ -162,76 +163,78 @@ def extract_trades_from_pdf(file_path):
                         i += 1
                         
         # Add summary at the end of each PDF
-        if trades:
-            # Group trades by symbol and side
-            buys = {}
-            sells = {}
-            
-            # Debug the trade sorting
-            debug_print("\n  🔍 Sorting trades:")
-            for trade in trades:
-                symbol = trade['Symbol']
-                side = trade['Side']
-                debug_print(f"    Trade: {symbol} {side} {trade['Quantity']} @ {trade['Price']}")
+        if DEBUG:
+            print("\n  📊 Debug Summary of Trades:")
+            if trades:
+                # Group trades by symbol and side
+                buys = {}
+                sells = {}
                 
-                # Determine target dictionary based on trade side
-                if side == "SELL":
-                    target_dict = sells
-                else:
-                    target_dict = buys
+                # Debug the trade sorting
+                debug_print("\n  🔍 Sorting trades:")
+                for trade in trades:
+                    symbol = trade['Symbol']
+                    side = trade['Side']
+                    debug_print(f"    Trade: {symbol} {side} {trade['Quantity']} @ {trade['Price']}")
+                    
+                    # Determine target dictionary based on trade side
+                    if side == "SELL":
+                        target_dict = sells
+                    else:
+                        target_dict = buys
+                    
+                    if symbol not in target_dict:
+                        target_dict[symbol] = {
+                            'qty': 0,
+                            'total_cost': 0,
+                            'earliest_time': trade['Time']
+                        }
+                    
+                    current = target_dict[symbol]
+                    current['qty'] += trade['Quantity']
+                    current['total_cost'] += trade['Quantity'] * trade['Price']
+                    current['earliest_time'] = min(current['earliest_time'], trade['Time'])
+                    
+                    debug_print(f"    Added to {'SELLS' if side == 'SELL' else 'BUYS'}, "
+                            f"New total: {current['qty']} @ {current['total_cost']/current['qty']:.2f}")
                 
-                if symbol not in target_dict:
-                    target_dict[symbol] = {
-                        'qty': 0,
-                        'total_cost': 0,
-                        'earliest_time': trade['Time']
-                    }
+                # Print summary
+                print("\n  📊 PDF Summary:")
+                pdf_total = 0
                 
-                current = target_dict[symbol]
-                current['qty'] += trade['Quantity']
-                current['total_cost'] += trade['Quantity'] * trade['Price']
-                current['earliest_time'] = min(current['earliest_time'], trade['Time'])
+                # Print LONG summary
+                if buys:
+                    print("\n  🟢 LONG:")  # Changed from BUYS
+                    print("  Symbol  Shares    Avg Price    Total Value    Time")
+                    print("  " + "-" * 55)
+                    
+                    for symbol, data in buys.items():
+                        if data['qty'] > 0:
+                            avg_price = data['total_cost'] / data['qty']
+                            total_value = data['total_cost']
+                            pdf_total += total_value
+                            
+                            print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${total_value:11,.2f}  {data['earliest_time']}")
+                    
+                    print("  " + "-" * 55)
                 
-                debug_print(f"    Added to {'SELLS' if side == 'SELL' else 'BUYS'}, "
-                          f"New total: {current['qty']} @ {current['total_cost']/current['qty']:.2f}")
-            
-            # Print summary
-            print("\n  📊 PDF Summary:")
-            pdf_total = 0
-            
-            # Print LONG summary
-            if buys:
-                print("\n  🟢 LONG:")  # Changed from BUYS
-                print("  Symbol  Shares    Avg Price    Total Value    Time")
-                print("  " + "-" * 55)
+                # Print SHORT summary
+                if sells:
+                    print("\n  🔴 SHORT:")  # Changed from SELLS
+                    print("  Symbol  Shares    Avg Price    Total Value    Time")
+                    print("  " + "-" * 55)
+                    
+                    for symbol, data in sells.items():
+                        if data['qty'] < 0:
+                            avg_price = data['total_cost'] / data['qty']
+                            total_value = data['total_cost']
+                            pdf_total += total_value
+                            
+                            print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${total_value:11,.2f}  {data['earliest_time']}")
+                    
+                    print("  " + "-" * 55)
                 
-                for symbol, data in buys.items():
-                    if data['qty'] > 0:
-                        avg_price = data['total_cost'] / data['qty']
-                        total_value = data['total_cost']
-                        pdf_total += total_value
-                        
-                        print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${total_value:11,.2f}  {data['earliest_time']}")
-                
-                print("  " + "-" * 55)
-            
-            # Print SHORT summary
-            if sells:
-                print("\n  🔴 SHORT:")  # Changed from SELLS
-                print("  Symbol  Shares    Avg Price    Total Value    Time")
-                print("  " + "-" * 55)
-                
-                for symbol, data in sells.items():
-                    if data['qty'] < 0:
-                        avg_price = data['total_cost'] / data['qty']
-                        total_value = data['total_cost']
-                        pdf_total += total_value
-                        
-                        print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${total_value:11,.2f}  {data['earliest_time']}")
-                
-                print("  " + "-" * 55)
-            
-            print(f"  PDF Total Value: ${pdf_total:,.2f}\n")
+                print(f"  PDF Total Value: ${pdf_total:,.2f}\n")
         
         doc.close()
         
@@ -312,7 +315,7 @@ def consolidate_trades(trades):
             if trade['Side'] == 'SHORT':
                 time_to_use = max(existing['Time'], trade['Time'])
             else:
-                time_to_use = min(existing['earliest_time'], trade['Time'])
+                time_to_use = min(existing['Time'], trade['Time'])
             
             consolidated[key] = {
                 'Symbol': trade['Symbol'],
@@ -327,256 +330,193 @@ def consolidate_trades(trades):
     
     return list(consolidated.values())
 
-def check_open_positions(folder_path, new_trades=None):
-    """Check master copy for open positions and maintain running balance"""
+def check_open_positions(folder_path):
+    """Check master copy for open positions and provide summary with totals"""
     try:
         master_file = os.path.join("/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades", MASTER_FILE)
         df = pd.read_excel(master_file)
         
-        # Initialize positions dictionary
-        positions = {}
+        # Find rows where Exit Qty or Exit Price is empty/NaN
+        open_positions = df[df['Exit Qty'].isna() | df['Exit Price'].isna()]
         
-        # First process existing positions from master file
-        for _, row in df.iterrows():
-            symbol = row['Symbol']
-            side = row['Side']
-            qty = row['Qty']
-            price = row['Entry Price']
-            date = pd.to_datetime(row['Entry Date'])
-            exit_qty = row['Exit Qty'] if pd.notna(row['Exit Qty']) else 0
+        if not open_positions.empty:
+            print("\n📈 Open Positions (Detail):")
+            for _, row in open_positions.iterrows():
+                position_type = "LONG" if row['Side'] in ['BUY', 'LONG'] else "SHORT"
+                print(f"  • {row['Symbol']}: {row['Qty']} shares ({position_type}) @ ${row['Entry Price']:.2f} "
+                      f"({row['Entry Date']} {row['Entry Time']})")
             
-            if symbol not in positions:
-                positions[symbol] = {
-                    'qty': 0,
-                    'total_cost': 0,
-                    'date': date,
-                    'trades': []
-                }
+            # Create summary by symbol
+            summary = {}
+            grand_total = 0
             
-            # Update position based on side and exit quantity
-            if side == 'LONG':
-                positions[symbol]['qty'] += (qty - exit_qty)
-                positions[symbol]['total_cost'] += (qty - exit_qty) * price
-            else:  # SHORT
-                positions[symbol]['qty'] -= (qty - exit_qty)
-                positions[symbol]['total_cost'] -= (qty - exit_qty) * price
-            
-            positions[symbol]['date'] = min(positions[symbol]['date'], date)
-            positions[symbol]['trades'].append({
-                'side': side,
-                'qty': qty,
-                'price': price,
-                'date': date,
-                'exit_qty': exit_qty
-            })
-        
-        # Process any new trades if provided
-        if new_trades:
-            for trade in new_trades:
-                symbol = trade['Symbol']
-                side = trade['Side']
-                qty = trade['Quantity']
-                price = trade['Price']
-                date = pd.to_datetime(trade['Date'])
+            for _, row in open_positions.iterrows():
+                symbol = row['Symbol']
+                qty = row['Qty']
+                price = row['Entry Price']
+                date = pd.to_datetime(row['Entry Date'])
                 
-                if symbol not in positions:
-                    positions[symbol] = {
-                        'qty': 0,
-                        'total_cost': 0,
-                        'date': date,
-                        'trades': []
+                if symbol in summary:
+                    existing = summary[symbol]
+                    total_qty = existing['qty'] + qty
+                    weighted_price = (existing['qty'] * existing['price'] + qty * price) / total_qty
+                    earliest_date = min(existing['date'], date)
+                    
+                    summary[symbol] = {
+                        'qty': total_qty,
+                        'price': weighted_price,
+                        'date': earliest_date,
+                        'total_value': total_qty * weighted_price
                     }
-                
-                # Update running balance
-                if side in ['LONG', 'BUY']:
-                    positions[symbol]['qty'] += qty
-                    positions[symbol]['total_cost'] += qty * price
-                else:  # SHORT or SELL
-                    positions[symbol]['qty'] -= qty
-                    positions[symbol]['total_cost'] -= qty * price
-                
-                positions[symbol]['trades'].append({
-                    'side': side,
-                    'qty': qty,
-                    'price': price,
-                    'date': date,
-                    'exit_qty': 0
-                })
-        
-        # Print running balances
-        print("\n📊 Current Position Balances:")
-        print("  Symbol  Net Pos    Avg Price    Total Value    Since")
-        print("  " + "-" * 55)
-        
-        grand_total = 0
-        for symbol, data in positions.items():
-            if data['qty'] != 0:  # Only show active positions
-                avg_price = abs(data['total_cost'] / data['qty']) if data['qty'] != 0 else 0
-                position_value = data['total_cost']
+                else:
+                    summary[symbol] = {
+                        'qty': qty,
+                        'price': price,
+                        'date': date,
+                        'total_value': qty * price
+                    }
+            
+            # Print summary with position values
+            print("\n📊 Open Positions Summary:")
+            print("  Symbol  Shares    Avg Price    Total Value    Since")
+            print("  " + "-" * 55)
+            
+            for symbol, data in summary.items():
+                position_value = data['total_value']
                 grand_total += position_value
-                
-                print(f"  {symbol:6} {data['qty']:8.0f} @ ${avg_price:8,.2f} = ${position_value:11,.2f}  "
-                      f"{data['date'].strftime('%Y-%m-%d')}")
-        
-        print("  " + "-" * 55)
-        print(f"  Total Portfolio Value: ${grand_total:,.2f}")
-        
-        return positions
+                print(f"  {symbol:6} {data['qty']:8.0f} @ ${data['price']:8,.2f} = ${position_value:11,.2f}  {data['date'].strftime('%Y-%m-%d')}")
+            
+            print("  " + "-" * 55)
+            print(f"  Total Portfolio Value: ${grand_total:,.2f}")
+            
+            return open_positions.to_dict('records')
+        else:
+            print("\n✅ No open positions found")
+            return []
             
     except FileNotFoundError:
         print(f"\n⚠️  Master copy not found: {master_file}")
-        return {}
+        return []
     except Exception as e:
         print(f"\n❌ Error reading master copy: {str(e)}")
-        return {}
+        return []
 
 def match_trades_fifo(df_master, consolidated_trades):
-    """Match trades using FIFO method and maintain running balances"""
-    df_new = df_master.copy()
+    """Match trades using FIFO method with running balance"""
+    positions = {}  # {symbol: {'qty': net_qty, 'trades': []}}
     
-    # Initialize running positions dictionary
-    running_positions = {}
-    
-    # First, load existing positions from master sheet
-    for idx, row in df_new.iterrows():
-        symbol = row['Symbol']
-        if symbol not in running_positions:
-            running_positions[symbol] = []
-            
-        # Add position to running balance
-        position = {
-            'idx': idx,
-            'qty': row['Qty'],
-            'remaining_qty': row['Qty'] - (row['Exit Qty'] if pd.notna(row['Exit Qty']) else 0),
-            'price': row['Entry Price'],
-            'time': row['Entry Time'],
-            'date': row['Entry Date'],
-            'side': row['Side']
-        }
-        running_positions[symbol].append(position)
-    
-    # Sort trades chronologically
-    consolidated_trades = sorted(consolidated_trades, key=lambda x: (x['Date'], x['Time']))
-    
-    for trade in consolidated_trades:
+    # Process trades in chronological order - this is crucial!
+    trades = sorted(consolidated_trades, key=lambda x: (x['Date'], x['Time']))
+    print("\n🔄 Matching trades using FIFO method...")
+    print("\nTrades to process:")
+    print(json.dumps(trades, indent=2, default=str))
+
+    for trade in trades:
         symbol = trade['Symbol']
-        qty = abs(trade['Quantity'])
+        side = trade['Side']  # This is now 'LONG' or 'SHORT' after consolidate_trades
+        qty = trade['Quantity']
         price = trade['Price']
         time = trade['Time']
         date = trade['Date']
-        side = 'LONG' if trade['Side'] in ['BUY', 'LONG'] else 'SHORT'
         
-        if side == 'SHORT':
-            # Check for existing LONG positions to offset
-            remaining_short_qty = qty
+        if symbol not in positions:
+            positions[symbol] = {'qty': 0, 'trades': []}
+        
+        curr_pos = positions[symbol]
+        print(f"\n📊 Processing {side} {qty} {symbol} @ ${price:.2f}")
+        print(f"  Current {symbol} balance: {curr_pos['qty']}")
+        
+        if side == 'LONG':  # This handles BUY orders
+            remaining_qty = qty
             
-            if symbol in running_positions:
-                for pos in running_positions[symbol]:
-                    if pos['side'] == 'LONG' and pos['remaining_qty'] > 0:
-                        # Calculate how much to offset
-                        offset_qty = min(remaining_short_qty, pos['remaining_qty'])
-                        
-                        # Update exit information in master sheet
-                        df_new.at[pos['idx'], 'Exit Qty'] = (
-                            df_new.at[pos['idx'], 'Exit Qty'] if pd.notna(df_new.at[pos['idx'], 'Exit Qty']) else 0
-                        ) + offset_qty
-                        df_new.at[pos['idx'], 'Exit Price'] = price
-                        df_new.at[pos['idx'], 'Exit Time'] = time
-                        df_new.at[pos['idx'], 'Exit Date'] = date
-                        
-                        # Update running position
-                        pos['remaining_qty'] -= offset_qty
-                        remaining_short_qty -= offset_qty
-                        
-                        if remaining_short_qty == 0:
+            # First try to cover SHORT positions (negative balance)
+            if curr_pos['qty'] < 0:
+                cover_qty = min(qty, abs(curr_pos['qty']))
+                
+                # Find open SHORT positions to close
+                for pos in reversed(curr_pos['trades']):
+                    if pos['Side'] == 'SELL' and (pos['Exit Qty'] is None or pd.isna(pos['Exit Qty'])) and cover_qty > 0:
+                        pos_cover = min(cover_qty, abs(pos['Qty']))
+                        pos['Exit Qty'] = pos_cover
+                        pos['Exit Price'] = price
+                        pos['Exit Time'] = time
+                        pos['Exit Date'] = date
+                        cover_qty -= pos_cover
+                        remaining_qty -= pos_cover
+                        print(f"  → Covered {pos_cover} shares of SHORT position")
+                        if cover_qty == 0:
                             break
             
-            # If there's still remaining short quantity, create new SHORT position
-            if remaining_short_qty > 0:
-                new_short = {
-                    "Symbol": symbol,
-                    "Qty": remaining_short_qty,
-                    "Side": "SHORT",
-                    "Entry Price": price,
-                    "Entry Time": time,
-                    "Entry Date": date,
-                    "Notes": "Short Position",
-                    "Exit Qty": None,
-                    "Exit Price": None,
-                    "Exit Time": None,
-                    "Exit Date": None
+            # Update running balance
+            curr_pos['qty'] += qty
+            
+            # Add new LONG position if there's remaining quantity
+            if remaining_qty > 0:
+                new_trade = {
+                    'Symbol': symbol,
+                    'Qty': remaining_qty,
+                    'Side': 'BUY',
+                    'Entry Price': price,
+                    'Entry Time': time,
+                    'Entry Date': date,
+                    'Notes': '',
+                    'Exit Qty': None,
+                    'Exit Price': None,
+                    'Exit Time': None,
+                    'Exit Date': None
                 }
-                df_new = pd.concat([df_new, pd.DataFrame([new_short])], ignore_index=True)
-                
-                # Add to running positions
-                if symbol not in running_positions:
-                    running_positions[symbol] = []
-                running_positions[symbol].append({
-                    'idx': len(df_new) - 1,
-                    'qty': remaining_short_qty,
-                    'remaining_qty': remaining_short_qty,
-                    'price': price,
-                    'time': time,
-                    'date': date,
-                    'side': 'SHORT'
-                })
+                curr_pos['trades'].append(new_trade)
+                print(f"  → Added LONG position of {remaining_qty} shares")
+            
+        elif side == 'SHORT':  # This handles SELL orders
+            remaining_sell = qty
+            
+            # First try to close existing LONG positions
+            for pos in curr_pos['trades']:
+                if pos['Side'] == 'BUY' and (pos['Exit Qty'] is None or pd.isna(pos['Exit Qty'])) and remaining_sell > 0:
+                    pos_close = min(remaining_sell, pos['Qty'])
+                    pos['Exit Qty'] = -pos_close
+                    pos['Exit Price'] = price
+                    pos['Exit Time'] = time
+                    pos['Exit Date'] = date
+                    remaining_sell -= pos_close
+                    print(f"  → Closed {pos_close} shares of LONG position")
+            
+            # Update running balance
+            curr_pos['qty'] -= qty
+            
+            # If there's still quantity to sell, create new SHORT position
+            if remaining_sell > 0:
+                new_trade = {
+                    'Symbol': symbol,
+                    'Qty': -remaining_sell,
+                    'Side': 'SELL',
+                    'Entry Price': price,
+                    'Entry Time': time,
+                    'Entry Date': date,
+                    'Notes': '',
+                    'Exit Qty': None,
+                    'Exit Price': None,
+                    'Exit Time': None,
+                    'Exit Date': None
+                }
+                curr_pos['trades'].append(new_trade)
+                print(f"  → Added SHORT position of {remaining_sell} shares")
         
-        else:  # LONG position
-            # Similar logic for LONG positions offsetting existing SHORT positions
-            remaining_long_qty = qty
-            
-            if symbol in running_positions:
-                for pos in running_positions[symbol]:
-                    if pos['side'] == 'SHORT' and pos['remaining_qty'] > 0:
-                        offset_qty = min(remaining_long_qty, pos['remaining_qty'])
-                        
-                        df_new.at[pos['idx'], 'Exit Qty'] = (
-                            df_new.at[pos['idx'], 'Exit Qty'] if pd.notna(df_new.at[pos['idx'], 'Exit Qty']) else 0
-                        ) + offset_qty
-                        df_new.at[pos['idx'], 'Exit Price'] = price
-                        df_new.at[pos['idx'], 'Exit Time'] = time
-                        df_new.at[pos['idx'], 'Exit Date'] = date
-                        
-                        pos['remaining_qty'] -= offset_qty
-                        remaining_long_qty -= offset_qty
-                        
-                        if remaining_long_qty == 0:
-                            break
-            
-            # Add remaining long quantity as new position
-            if remaining_long_qty > 0:
-                new_long = {
-                    "Symbol": symbol,
-                    "Qty": remaining_long_qty,
-                    "Side": "LONG",
-                    "Entry Price": price,
-                    "Entry Time": time,
-                    "Entry Date": date,
-                    "Notes": "",
-                    "Exit Qty": None,
-                    "Exit Price": None,
-                    "Exit Time": None,
-                    "Exit Date": None
-                }
-                df_new = pd.concat([df_new, pd.DataFrame([new_long])], ignore_index=True)
-                
-                if symbol not in running_positions:
-                    running_positions[symbol] = []
-                running_positions[symbol].append({
-                    'idx': len(df_new) - 1,
-                    'qty': remaining_long_qty,
-                    'remaining_qty': remaining_long_qty,
-                    'price': price,
-                    'time': time,
-                    'date': date,
-                    'side': 'LONG'
-                })
+        print(f"  → New {symbol} balance: {curr_pos['qty']}")
     
-    # Sort the final dataframe by date and time
-    df_new['datetime'] = pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time'])
-    df_new = df_new.sort_values('datetime').drop('datetime', axis=1)
+    # Convert all trades back to DataFrame
+    all_trades = []
+    for symbol_trades in positions.values():
+        all_trades.extend(symbol_trades['trades'])
     
-    return df_new
+    # Sort by date and time
+    df_result = pd.DataFrame(all_trades)
+    if not df_result.empty:
+        df_result['datetime'] = pd.to_datetime(df_result['Entry Date'] + ' ' + df_result['Entry Time'].astype(str))
+        df_result = df_result.sort_values('datetime').drop('datetime', axis=1)
+    
+    return df_result
 
 def update_master_sheet(consolidated_trades, folder_path):
     """Update master balance sheet with new trades after backing up"""
@@ -588,9 +528,54 @@ def update_master_sheet(consolidated_trades, folder_path):
         # Create backup of current master file
         if os.path.exists(master_file):
             print(f"\n📑 Creating backup of master sheet...")
-            df_master = pd.read_excel(master_file)
-            df_master.to_excel(backup_file, index=False)
-            print(f"✅ Backup created: master-copy-backup.xlsx")
+            # Read existing workbook with all sheets
+            with pd.ExcelFile(master_file) as xls:
+                all_sheets = {}
+                for sheet_name in xls.sheet_names:
+                    all_sheets[sheet_name] = pd.read_excel(xls, sheet_name=sheet_name)
+            
+            # Save backup with all sheets
+            with pd.ExcelWriter(backup_file, engine='openpyxl') as writer:
+                for sheet_name, df in all_sheets.items():
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"✅ Backup created: {os.path.basename(MASTER_BACKUP)}")
+            
+            # Load existing sheets with proper names - handle both old and new sheet names
+            df_master = pd.DataFrame()
+            df_raw_trades = pd.DataFrame()
+            df_consolidated = pd.DataFrame()
+            
+            # Get Trades sheet (formerly Sheet1)
+            if 'Trades' in all_sheets:
+                df_master = all_sheets['Trades'].copy()
+            elif 'Sheet1' in all_sheets:
+                df_master = all_sheets['Sheet1'].copy()
+            else:
+                df_master = pd.DataFrame(columns=[
+                    "Symbol", "Qty", "Side", "Entry Price", "Entry Time", 
+                    "Entry Date", "Notes", "Exit Qty", "Exit Price", 
+                    "Exit Time", "Exit Date"
+                ])
+            
+            # Get Raw Trades sheet (formerly Trades)
+            if 'Raw Trades' in all_sheets:
+                df_raw_trades = all_sheets['Raw Trades'].copy()
+            elif 'Trades' in all_sheets and 'Symbol' in all_sheets['Trades'].columns and 'Date' in all_sheets['Trades'].columns:
+                # This is the old "Trades" sheet that should be "Raw Trades"
+                df_raw_trades = all_sheets['Trades'].copy()
+            else:
+                df_raw_trades = pd.DataFrame(columns=[
+                    "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+                ])
+            
+            # Get Consolidated Trades sheet
+            if 'Consolidated Trades' in all_sheets:
+                df_consolidated = all_sheets['Consolidated Trades'].copy()
+            else:
+                df_consolidated = pd.DataFrame(columns=[
+                    "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
+                ])
+                
         else:
             # Create new master file with headers
             df_master = pd.DataFrame(columns=[
@@ -598,65 +583,208 @@ def update_master_sheet(consolidated_trades, folder_path):
                 "Entry Date", "Notes", "Exit Qty", "Exit Price", 
                 "Exit Time", "Exit Date"
             ])
+            df_raw_trades = pd.DataFrame(columns=[
+                "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+            ])
+            df_consolidated = pd.DataFrame(columns=[
+                "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
+            ])
         
-        # Track unique trades to prevent duplication
-        unique_trades = set()
-        new_trades = []
+        print(f"📊 Current data before processing:")
+        print(f"   - Trades sheet: {len(df_master)} rows")
+        print(f"   - Raw Trades sheet: {len(df_raw_trades)} rows")
+        print(f"   - Consolidated Trades sheet: {len(df_consolidated)} rows")
+        
+        # Create unique identifier for existing trades in master sheet
+        if not df_master.empty:
+            df_master['trade_key'] = (
+                df_master['Symbol'].astype(str) + '_' + 
+                df_master['Qty'].astype(str) + '_' + 
+                df_master['Side'].astype(str) + '_' + 
+                df_master['Entry Price'].astype(str) + '_' + 
+                df_master['Entry Time'].astype(str) + '_' + 
+                df_master['Entry Date'].astype(str)
+            )
+        
+        # Create unique identifier for existing trades in raw trades sheet
+        if not df_raw_trades.empty:
+            df_raw_trades['trade_key'] = (
+                df_raw_trades['Symbol'].astype(str) + '_' + 
+                df_raw_trades['Date'].astype(str) + '_' + 
+                df_raw_trades['Time'].astype(str) + '_' + 
+                df_raw_trades['Side'].astype(str) + '_' + 
+                df_raw_trades['Quantity'].astype(str) + '_' + 
+                df_raw_trades['Price'].astype(str)
+            )
+        
+        # Create unique identifier for existing consolidated trades
+        if not df_consolidated.empty:
+            df_consolidated['trade_key'] = (
+                df_consolidated['Symbol'].astype(str) + '_' + 
+                df_consolidated['Date'].astype(str) + '_' + 
+                df_consolidated['Side'].astype(str)
+            )
+        
+        # Track new trades for all sheets
+        new_position_trades = []
+        new_raw_trades = []
+        
+        # Group consolidated trades by symbol, date, and side for the consolidated sheet
+        consolidated_by_day = {}
         
         for trade in consolidated_trades:
-            # Create unique key for trade
-            trade_key = (
-                trade['Symbol'],
-                trade['Quantity'],
-                trade['Side'],
-                trade['Price'],
-                trade['Time'],
-                trade['Date']
+            # Create trade keys
+            position_trade_key = (
+                f"{trade['Symbol']}_{trade['Quantity']}_{trade['Side']}_"
+                f"{trade['Price']}_{trade['Time']}_{trade['Date']}"
             )
             
-            # Only process if we haven't seen this trade before
-            if trade_key not in unique_trades and trade['Side'] in ['BUY', 'LONG']:
-                unique_trades.add(trade_key)
-                new_trade = {
+            raw_trade_key = (
+                f"{trade['Symbol']}_{trade['Date']}_{trade['Time']}_{trade['Side']}_"
+                f"{trade['Quantity']}_{trade['Price']}"
+            )
+            
+            consolidated_trade_key = f"{trade['Symbol']}_{trade['Date']}_{trade['Side']}"
+            
+            # Add to raw trades sheet if not already exists
+            if df_raw_trades.empty or raw_trade_key not in df_raw_trades['trade_key'].values:
+                new_raw_trade = {
                     "Symbol": trade['Symbol'],
-                    "Qty": trade['Quantity'],
-                    "Side": 'LONG',
-                    "Entry Price": trade['Price'],
-                    "Entry Time": trade['Time'],
-                    "Entry Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
-                    "Notes": "",
-                    "Exit Qty": None,
-                    "Exit Price": None,
-                    "Exit Time": None,
-                    "Exit Date": None
+                    "Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
+                    "Time": trade['Time'],
+                    "Side": trade['Side'],
+                    "Quantity": trade['Quantity'],
+                    "Price": trade['Price']
                 }
-                new_trades.append(new_trade)
+                new_raw_trades.append(new_raw_trade)
+            
+            # Group for consolidated trades sheet (by symbol, date, side)
+            if consolidated_trade_key not in consolidated_by_day:
+                consolidated_by_day[consolidated_trade_key] = {
+                    "Symbol": trade['Symbol'],
+                    "Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
+                    "Side": trade['Side'],
+                    "total_qty": 0,
+                    "total_value": 0,
+                    "time": trade['Time']  # Initialize with first trade's time
+                }
+            
+            group = consolidated_by_day[consolidated_trade_key]
+            group['total_qty'] += trade['Quantity']
+            group['total_value'] += trade['Quantity'] * trade['Price']
+            
+            # Update time based on trade side:
+            # LONG: keep earliest time
+            # SHORT: keep latest time
+            if trade['Side'] == 'LONG':
+                group['time'] = min(group['time'], trade['Time'])
+            else:  # SHORT
+                group['time'] = max(group['time'], trade['Time'])
+            
+            # Add LONG positions to master sheet for position tracking
+            if trade['Side'] in ['BUY', 'LONG']:
+                # Check if trade already exists in master
+                if df_master.empty or position_trade_key not in df_master['trade_key'].values:
+                    new_trade = {
+                        "Symbol": trade['Symbol'],
+                        "Qty": trade['Quantity'],
+                        "Side": 'LONG',
+                        "Entry Price": trade['Price'],
+                        "Entry Time": trade['Time'],
+                        "Entry Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
+                        "Notes": "",
+                        "Exit Qty": None,
+                        "Exit Price": None,
+                        "Exit Time": None,
+                        "Exit Date": None
+                    }
+                    new_position_trades.append(new_trade)
         
-        if new_trades:
-            # Convert new trades to DataFrame
-            df_new = pd.DataFrame(new_trades)
-            
-            # Sort by date and time
-            df_new['datetime'] = pd.to_datetime(df_new['Entry Date'] + ' ' + df_new['Entry Time'])
-            df_new = df_new.sort_values('datetime')
-            df_new = df_new.drop('datetime', axis=1)
-            
-            # Append new trades
-            df_master = pd.concat([df_master, df_new], ignore_index=True)
+        # Create new consolidated trades for the consolidated sheet
+        new_consolidated_trades = []
+        for key, group in consolidated_by_day.items():
+            # Check if this consolidated trade already exists
+            if df_consolidated.empty or key not in df_consolidated['trade_key'].values:
+                # Fix the average price calculation for SHORT positions
+                if group['total_qty'] != 0:
+                    avg_price = abs(group['total_value'] / group['total_qty'])
+                else:
+                    avg_price = 0
+                    
+                new_consolidated_trade = {
+                    "Symbol": group['Symbol'],
+                    "Date": group['Date'],
+                    "Time": group['time'],
+                    "Side": group['Side'],
+                    "Quantity": group['total_qty'],
+                    "Avg_Price": avg_price,
+                    "Total_Value": group['total_value']
+                }
+                new_consolidated_trades.append(new_consolidated_trade)
+        
+        # APPEND new trades to respective DataFrames (not replace)
+        if new_position_trades:
+            df_new_positions = pd.DataFrame(new_position_trades)
+            df_master = pd.concat([df_master, df_new_positions], ignore_index=True)
+        
+        if new_raw_trades:
+            df_new_raw = pd.DataFrame(new_raw_trades)
+            df_raw_trades = pd.concat([df_raw_trades, df_new_raw], ignore_index=True)
+        
+        if new_consolidated_trades:
+            df_new_consolidated = pd.DataFrame(new_consolidated_trades)
+            df_consolidated = pd.concat([df_consolidated, df_new_consolidated], ignore_index=True)
+        
+        # Drop the temporary trade_key columns before saving
+        df_master = df_master.drop('trade_key', axis=1, errors='ignore')
+        df_raw_trades = df_raw_trades.drop('trade_key', axis=1, errors='ignore')
+        df_consolidated = df_consolidated.drop('trade_key', axis=1, errors='ignore')
         
         # Match SELL trades to open positions using FIFO
         df_master = match_trades_fifo(df_master, consolidated_trades)
         
-        # Final sort
-        df_master['datetime'] = pd.to_datetime(df_master['Entry Date'] + ' ' + df_master['Entry Time'])
-        df_master = df_master.sort_values('datetime').drop('datetime', axis=1)
+        # Final sort and cleanup for master sheet
+        if not df_master.empty:
+            df_master['datetime'] = pd.to_datetime(df_master['Entry Date'] + ' ' + df_master['Entry Time'])
+            df_master = df_master.sort_values('datetime').drop('datetime', axis=1)
+            
+            # Remove any duplicate rows
+            df_master = df_master.drop_duplicates(
+                subset=['Symbol', 'Qty', 'Side', 'Entry Price', 'Entry Time', 'Entry Date'],
+                keep='first'
+            )
         
-        # Save updated master file
-        df_master.to_excel(master_file, index=False)
-        print(f"✅ Updated master sheet with {len(new_trades)} new trades and matched SELL orders")
+        # Sort raw trades sheet by date and time
+        if not df_raw_trades.empty:
+            df_raw_trades['datetime'] = pd.to_datetime(df_raw_trades['Date'] + ' ' + df_raw_trades['Time'])
+            df_raw_trades = df_raw_trades.sort_values('datetime').drop('datetime', axis=1)
+        
+        # Sort consolidated trades sheet by date
+        if not df_consolidated.empty:
+            df_consolidated['datetime'] = pd.to_datetime(df_consolidated['Date'])
+            df_consolidated = df_consolidated.sort_values(['datetime', 'Symbol', 'Side']).drop('datetime', axis=1)
+        
+        # Save updated master file with proper sheet names
+        with pd.ExcelWriter(master_file, engine='openpyxl') as writer:
+            df_master.to_excel(writer, sheet_name='Trades', index=False)  # Position tracking
+            df_raw_trades.to_excel(writer, sheet_name='Raw Trades', index=False)  # All individual trades
+            df_consolidated.to_excel(writer, sheet_name='Consolidated Trades', index=False)  # Daily consolidation
+        
+        parent_dir = os.path.basename(os.path.dirname(master_file))
+        filename = os.path.basename(master_file)
+        print(f"✅ Updated {parent_dir}/{filename}:")
+        print(f"   - Added {len(new_position_trades)} new positions to 'Trades' sheet")
+        print(f"   - Added {len(new_raw_trades)} new trades to 'Raw Trades' sheet")
+        print(f"   - Added {len(new_consolidated_trades)} new entries to 'Consolidated Trades' sheet")
+        print(f"📊 Final data after processing:")
+        print(f"   - Trades sheet: {len(df_master)} rows")
+        print(f"   - Raw Trades sheet: {len(df_raw_trades)} rows")
+        print(f"   - Consolidated Trades sheet: {len(df_consolidated)} rows")
         
     except Exception as e:
         print(f"❌ Error updating master sheet: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 def manage_processed_files(folder_path, pdf_file=None, check_only=False):
     """Track processed PDF files using a JSON file"""
@@ -702,55 +830,131 @@ def reset_test_files(folder_path):
             df_empty.to_excel(test_master_path, index=False)
         print("🔄 Reset master copy test file")
 
-def main():
-    # Reset test files if in test mode
-    if TEST_MODE:
-        print("\n🧪 Running in test mode")
-        folder_path = get_folder_path(DEFAULT_TEST_DATE)
-        reset_test_files(folder_path)
-    
-    # Get date input from user, default to test date if empty
-    date_input = input("Enter month-year (MM.YYYY) or press Enter for default test date: ").strip()
-    
+def reset_master_sheet():
+    """Reset all spreadsheets and processed files tracking"""
     try:
-        if not date_input:
-            date_input = DEFAULT_TEST_DATE
-            print(f"Using test date: {date_input}")
+        base_path = "/Users/michaeljacinto/Library/CloudStorage/OneDrive-Personal/Desktop/trades"
+        master_file = os.path.join(base_path, MASTER_FILE)
+        backup_file = os.path.join(base_path, MASTER_BACKUP)
+        
+        print(f"\n🔄 Resetting all spreadsheets and processed files...")
+        
+        # Create backup before reset
+        if os.path.exists(master_file):
+            print(f"📑 Creating backup before reset...")
+            with pd.ExcelFile(master_file) as xls:
+                all_sheets = {}
+                for sheet_name in xls.sheet_names:
+                    all_sheets[sheet_name] = pd.read_excel(xls, sheet_name=sheet_name)
             
-        # Get folder path based on month-year
-        folder_path = get_folder_path(date_input)
-        print(f"📂 Processing trades from: {folder_path}")
+            # Save backup with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            reset_backup = os.path.join(base_path, f"master_pre_reset_{timestamp}.xlsx")
+            with pd.ExcelWriter(reset_backup, engine='openpyxl') as writer:
+                for sheet_name, df in all_sheets.items():
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            print(f"✅ Pre-reset backup created: {os.path.basename(reset_backup)}")
         
-        # Check for open positions first
-        open_positions = check_open_positions(folder_path)
+        # Create fresh empty sheets with headers only
+        df_master = pd.DataFrame(columns=[
+            "Symbol", "Qty", "Side", "Entry Price", "Entry Time", 
+            "Entry Date", "Notes", "Exit Qty", "Exit Price", 
+            "Exit Time", "Exit Date"
+        ])
         
-        # Process trades
+        df_raw_trades = pd.DataFrame(columns=[
+            "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+        ])
+        
+        df_consolidated = pd.DataFrame(columns=[
+            "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
+        ])
+        
+        # Save empty master file
+        with pd.ExcelWriter(master_file, engine='openpyxl') as writer:
+            df_master.to_excel(writer, sheet_name='Trades', index=False)
+            df_raw_trades.to_excel(writer, sheet_name='Raw Trades', index=False)
+            df_consolidated.to_excel(writer, sheet_name='Consolidated Trades', index=False)
+        
+        # Reset all processed_files.json in subdirectories
+        reset_count = 0
+        for root, dirs, files in os.walk(base_path):
+            processed_file = os.path.join(root, "processed_files.json")
+            if os.path.exists(processed_file):
+                # Clear the processed files list
+                with open(processed_file, 'w') as f:
+                    json.dump([], f, indent=2)
+                reset_count += 1
+                rel_path = os.path.relpath(root, base_path)
+                print(f"   📂 Reset processed files in: {rel_path}")
+        
+        # Remove backup file if it exists
+        if os.path.exists(backup_file):
+            os.remove(backup_file)
+        
+        print(f"✅ Reset complete!")
+        print(f"   - Cleared all 3 spreadsheet tabs (keeping headers)")
+        print(f"   - Reset {reset_count} processed_files.json files")
+        print(f"   - All trade data has been cleared")
+        print(f"   - You can now reprocess folders from scratch")
+        
+    except Exception as e:
+        print(f"❌ Error during reset: {str(e)}")
+
+def process_folder(date_str):
+    """Process a single folder based on date string"""
+    try:
+        folder_path = get_folder_path(date_str)
+        print(f"\n📁 Processing folder: {os.path.basename(folder_path)}")
+        
+        # Reset test files if in test mode
+        if TEST_MODE:
+            reset_test_files(folder_path)
+        
+        # Get all trades from PDFs in the folder
         all_trades = gather_all_trades(folder_path)
         
-        # Exit if no new trades
         if not all_trades:
-            print("✅ No updates needed for master sheet")
+            print("No new trades found to process.")
             return
         
-        # Consolidate trades
+        # Consolidate trades by symbol and date
         consolidated_trades = consolidate_trades(all_trades)
         
-        # Update running balances with new trades
-        check_open_positions(folder_path, consolidated_trades)
+        print(f"\n📊 Trade Summary:")
+        print(f"   - Total individual trades: {len(all_trades)}")
+        print(f"   - Consolidated trades: {len(consolidated_trades)}")
         
-        # Generate output filename with date
-        date_obj = datetime.strptime(date_input, "%m.%Y")
-        output_filename = f"trades_{date_obj.strftime('%Y%m')}_consolidated.csv"
-        
-        # Export consolidated trades
-        export_to_csv(consolidated_trades, output_filename, folder_path)
-        
-        # Update master balance sheet
+        # Update master sheet with consolidated trades
         update_master_sheet(consolidated_trades, folder_path)
         
-    except (ValueError, FileNotFoundError) as e:
+        # Check and display open positions
+        check_open_positions(folder_path)
+        
+    except (FileNotFoundError, ValueError) as e:
         print(f"❌ Error: {str(e)}")
-        return
+    except Exception as e:
+        print(f"❌ Unexpected error processing folder: {str(e)}")
+
+def main():
+    print("=" * 60)
+    print("📊 TRADE LOG FORMATTER")
+    print("=" * 60)
+    
+
+    choice = input("\n'RESET' or enter a date (e.g. 01.2025): ").strip()
+    
+    if choice == 'RESET':
+        confirm = input("⚠️  This will DELETE ALL trade data. Type 'y' to confirm: ").strip()
+        if confirm == 'y':
+            reset_master_sheet()
+        else:
+            print("❌ Reset cancelled")
+    else:
+        if choice:
+            process_folder(choice)
+        else:
+            print("❌ Please enter a valid folder name")
 
 if __name__ == "__main__":
     main()
