@@ -617,33 +617,79 @@ def update_master_sheet(consolidated_trades, folder_path):
         
         # Create unique identifier for existing trades in master sheet
         if not df_master.empty:
-            df_master['trade_key'] = (
-                df_master['Symbol'].astype(str) + '_' + 
-                df_master['Qty'].astype(str) + '_' + 
-                df_master['Side'].astype(str) + '_' + 
-                df_master['Entry Price'].astype(str) + '_' + 
-                df_master['Entry Time'].astype(str) + '_' + 
-                df_master['Entry Date'].astype(str)
-            )
+            # Check which column names exist and use them
+            qty_col = 'Qty' if 'Qty' in df_master.columns else ('Quantity' if 'Quantity' in df_master.columns else None)
+            
+            # Check for Side column more carefully
+            if 'Side' in df_master.columns:
+                side_col = 'Side'
+            elif 'Type' in df_master.columns:
+                side_col = 'Type'
+            else:
+                print(f"⚠️ Warning: No 'Side' or 'Type' column found in master sheet. Available columns: {list(df_master.columns)}")
+                side_col = None
+            
+            price_col = 'Entry Price' if 'Entry Price' in df_master.columns else ('Price' if 'Price' in df_master.columns else None)
+            time_col = 'Entry Time' if 'Entry Time' in df_master.columns else ('Time' if 'Time' in df_master.columns else None)
+            date_col = 'Entry Date' if 'Entry Date' in df_master.columns else ('Date' if 'Date' in df_master.columns else None)
+            
+            # Only create trade keys if we have all required columns
+            if all(col is not None for col in [qty_col, side_col, price_col, time_col, date_col]):
+                df_master['trade_key'] = (
+                    df_master['Symbol'].astype(str) + '_' + 
+                    df_master[qty_col].astype(str) + '_' + 
+                    df_master[side_col].astype(str) + '_' + 
+                    df_master[price_col].astype(str) + '_' + 
+                    df_master[time_col].astype(str) + '_' + 
+                    df_master[date_col].astype(str)
+                )
+            else:
+                print(f"⚠️ Warning: Missing required columns in master sheet. Skipping trade key creation.")
+                df_master['trade_key'] = ''
         
         # Create unique identifier for existing trades in raw trades sheet
         if not df_raw_trades.empty:
-            df_raw_trades['trade_key'] = (
-                df_raw_trades['Symbol'].astype(str) + '_' + 
-                df_raw_trades['Date'].astype(str) + '_' + 
-                df_raw_trades['Time'].astype(str) + '_' + 
-                df_raw_trades['Side'].astype(str) + '_' + 
-                df_raw_trades['Quantity'].astype(str) + '_' + 
-                df_raw_trades['Price'].astype(str)
-            )
+            # Check which column names exist and use them - be more careful about fallbacks
+            qty_col = 'Quantity' if 'Quantity' in df_raw_trades.columns else 'Qty'
+            
+            # Check for Side column more carefully
+            if 'Side' in df_raw_trades.columns:
+                side_col = 'Side'
+            elif 'Type' in df_raw_trades.columns:
+                side_col = 'Type'
+            else:
+                # If neither exists, we have a problem with the data structure
+                print(f"⚠️ Warning: No 'Side' or 'Type' column found in Raw Trades. Available columns: {list(df_raw_trades.columns)}")
+                # Skip creating trade keys for raw trades if we can't identify the side column
+                df_raw_trades['trade_key'] = ''
+            
+            if 'trade_key' not in df_raw_trades.columns:
+                df_raw_trades['trade_key'] = (
+                    df_raw_trades['Symbol'].astype(str) + '_' + 
+                    df_raw_trades['Date'].astype(str) + '_' + 
+                    df_raw_trades['Time'].astype(str) + '_' + 
+                    df_raw_trades[side_col].astype(str) + '_' + 
+                    df_raw_trades[qty_col].astype(str) + '_' + 
+                    df_raw_trades['Price'].astype(str)
+                )
         
         # Create unique identifier for existing consolidated trades
         if not df_consolidated.empty:
-            df_consolidated['trade_key'] = (
-                df_consolidated['Symbol'].astype(str) + '_' + 
-                df_consolidated['Date'].astype(str) + '_' + 
-                df_consolidated['Side'].astype(str)
-            )
+            # Check for Side column more carefully
+            if 'Side' in df_consolidated.columns:
+                side_col = 'Side'
+            elif 'Type' in df_consolidated.columns:
+                side_col = 'Type'
+            else:
+                print(f"⚠️ Warning: No 'Side' or 'Type' column found in Consolidated Trades. Available columns: {list(df_consolidated.columns)}")
+                df_consolidated['trade_key'] = ''
+            
+            if 'trade_key' not in df_consolidated.columns:
+                df_consolidated['trade_key'] = (
+                    df_consolidated['Symbol'].astype(str) + '_' + 
+                    df_consolidated['Date'].astype(str) + '_' + 
+                    df_consolidated[side_col].astype(str)
+                )
         
         # Track new trades for all sheets
         new_position_trades = []
@@ -763,6 +809,21 @@ def update_master_sheet(consolidated_trades, folder_path):
         
         # Match SELL trades to open positions using FIFO
         df_master = match_trades_fifo(df_master, consolidated_trades)
+        
+        # Standardize column names for master sheet
+        if not df_master.empty:
+            # Map old column names to new ones if they exist
+            column_mapping = {
+                'Quantity': 'Qty',
+                'Type': 'Side',
+                'Price': 'Entry Price',
+                'Time': 'Entry Time',
+                'Date': 'Entry Date'
+            }
+            
+            for old_name, new_name in column_mapping.items():
+                if old_name in df_master.columns and new_name not in df_master.columns:
+                    df_master = df_master.rename(columns={old_name: new_name})
         
         # Final sort and cleanup for master sheet
         if not df_master.empty:
