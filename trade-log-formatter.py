@@ -8,13 +8,13 @@ import fitz  # PyMuPDF for PDF processing
 import csv
 
 # Configuration
-DEBUG = False  # Set to True to enable debug printing
+DEBUG = True  # Set to True to enable debug printing
 # Set default test date to yesterday
 yesterday = datetime.now() - timedelta(days=1)
 # DEFAULT_TEST_DATE = datetime.now().strftime("%m.%Y")
 
 # Add at the top with other configurations
-TEST_MODE = False  # Set to True to use test files
+TEST_MODE = True  # Set to True to use test files
 DEFAULT_TEST_DATE = "06.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
 MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-trades.xlsx"
 MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
@@ -106,11 +106,24 @@ def extract_trades_from_pdf(file_path):
         doc = fitz.open(file_path)
         print(f"\n📄 Processing: {os.path.basename(file_path)}")
         
-        for page in doc:
+        # Process ALL pages, not just the first one with USD
+        for page_num, page in enumerate(doc):
             text = page.get_text()
+            debug_print(f"  📄 Processing page {page_num + 1}")
+            
+            # Look for USD sections on each page
             sections = text.split('USD')
-            if len(sections) > 1:
-                relevant_text = sections[1].split('Financial Instrument Information')[0]
+            
+            # Process each USD section (skip the first split which is before first USD)
+            for section_num, section in enumerate(sections[1:], 1):
+                debug_print(f"    📋 Processing USD section {section_num} on page {page_num + 1}")
+                
+                # End processing at Financial Instrument Information if found
+                if 'Financial Instrument Information' in section:
+                    relevant_text = section.split('Financial Instrument Information')[0]
+                else:
+                    relevant_text = section
+                
                 lines = [line.strip() for line in relevant_text.splitlines() if line.strip()]
                 
                 i = 0
@@ -146,16 +159,16 @@ def extract_trades_from_pdf(file_path):
                                 
                                 debug_print(f"    Parsed Trade: {'LONG' if trade_data['Side'] == 'BUY' else 'SHORT'} {trade_data['Quantity']} "
                                           f"{trade_data['Symbol']} @ ${trade_data['Price']:.2f} "
-                                          f"({'Option' if is_option else 'Stock'})")
+                                          f"({'Option' if is_option else 'Stock'}) [Page {page_num + 1}]")
                                 
                                 trades.append(trade_data)
                             
                             # Skip to next potential transaction
                             i += 12
                         except (IndexError, ValueError) as e:
-                            print(f"  ⚠️ Error parsing trade at line {i}")
+                            print(f"  ⚠️ Error parsing trade at line {i} on page {page_num + 1}")
                             print(f"  ⚠️ Error details: {str(e)}")
-                            print(f"  ⚠️ Current line content: {lines[i]}")
+                            print(f"  ⚠️ Current line content: {lines[i] if i < len(lines) else 'EOF'}")
                             i += 1
                     else:
                         i += 1
@@ -511,7 +524,8 @@ def match_trades_fifo(df_master, consolidated_trades):
     # Sort by date and time
     df_result = pd.DataFrame(all_trades)
     if not df_result.empty:
-        df_result['datetime'] = pd.to_datetime(df_result['Entry Date'] + ' ' + df_result['Entry Time'].astype(str))
+        # Convert both date and time to string before concatenating
+        df_result['datetime'] = pd.to_datetime(df_result['Entry Date'].astype(str) + ' ' + df_result['Entry Time'].astype(str))
         df_result = df_result.sort_values('datetime').drop('datetime', axis=1)
     
     return df_result
@@ -559,7 +573,7 @@ def update_master_sheet(consolidated_trades, folder_path):
             if 'Raw Trades' in all_sheets:
                 df_raw_trades = all_sheets['Raw Trades'].copy()
                 # Ensure we only keep the columns we want, in the right order
-                desired_columns = ["Symbol", "Quantity", "Price", "Time", "Date"]
+                desired_columns = ["Symbol", "Quantity", "Side", "Price", "Time", "Date"]
                 # Keep only columns that exist and in our desired order
                 existing_columns = [col for col in desired_columns if col in df_raw_trades.columns]
                 df_raw_trades = df_raw_trades[existing_columns]
@@ -567,11 +581,11 @@ def update_master_sheet(consolidated_trades, folder_path):
                 # This is the old "Trades" sheet that should be "Raw Trades"
                 df_raw_trades = all_sheets['Trades'].copy()
                 # Reorder columns if they exist
-                if all(col in df_raw_trades.columns for col in ["Symbol", "Quantity", "Price", "Time", "Date"]):
+                if all(col in df_raw_trades.columns for col in ["Symbol", "Quantity", "Side", "Price", "Time", "Date"]):
                     df_raw_trades = df_raw_trades[["Symbol", "Quantity", "Price", "Time", "Date"]]
             else:
                 df_raw_trades = pd.DataFrame(columns=[
-                    "Symbol", "Quantity", "Price", "Time", "Date"
+                    "Symbol", "Quantity", "Side", "Price", "Time", "Date"
                 ])
         
             # Get Consolidated Trades sheet
@@ -579,7 +593,7 @@ def update_master_sheet(consolidated_trades, folder_path):
                 df_consolidated = all_sheets['Consolidated Trades'].copy()
             else:
                 df_consolidated = pd.DataFrame(columns=[
-                    "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
+                    "Symbol", "Quantity", "Side", "Avg_Price", "Time", "Date", "Total_Value"
                 ])
                 
         else:
@@ -657,6 +671,7 @@ def update_master_sheet(consolidated_trades, folder_path):
                 new_raw_trade = {
                     "Symbol": trade['Symbol'],
                     "Quantity": trade['Quantity'],
+                    "Side": trade['Side'],  # Add the missing Side column
                     "Price": trade['Price'],
                     "Time": trade['Time'],
                     "Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
@@ -718,13 +733,14 @@ def update_master_sheet(consolidated_trades, folder_path):
                     
                 new_consolidated_trade = {
                     "Symbol": group['Symbol'],
-                    "Date": group['Date'],
-                    "Time": group['time'],
-                    "Side": group['Side'],
                     "Quantity": group['total_qty'],
+                    "Side": group['Side'],
                     "Avg_Price": avg_price,
+                    "Time": group['time'],
+                    "Date": group['Date'],
                     "Total_Value": group['total_value']
                 }
+                
                 new_consolidated_trades.append(new_consolidated_trade)
         
         # APPEND new trades to respective DataFrames (not replace)
@@ -750,7 +766,8 @@ def update_master_sheet(consolidated_trades, folder_path):
         
         # Final sort and cleanup for master sheet
         if not df_master.empty:
-            df_master['datetime'] = pd.to_datetime(df_master['Entry Date'] + ' ' + df_master['Entry Time'])
+            # Convert time to string before concatenating, using mixed format for flexibility
+            df_master['datetime'] = pd.to_datetime(df_master['Entry Date'].astype(str) + ' ' + df_master['Entry Time'].astype(str), format='mixed', errors='coerce')
             df_master = df_master.sort_values('datetime').drop('datetime', axis=1)
             
             # Remove any duplicate rows
@@ -761,14 +778,18 @@ def update_master_sheet(consolidated_trades, folder_path):
         
         # Sort raw trades sheet by date and time
         if not df_raw_trades.empty:
-            df_raw_trades['datetime'] = pd.to_datetime(df_raw_trades['Date'] + ' ' + df_raw_trades['Time'])
+            # Convert both date and time to string before concatenating, using mixed format for flexibility
+            df_raw_trades['datetime'] = pd.to_datetime(df_raw_trades['Date'].astype(str) + ' ' + df_raw_trades['Time'].astype(str), format='mixed', errors='coerce')
             df_raw_trades = df_raw_trades.sort_values('datetime').drop('datetime', axis=1)
         
         # Sort consolidated trades sheet by date
+        # Create unique identifier for existing consolidated trades
         if not df_consolidated.empty:
-            df_consolidated['datetime'] = pd.to_datetime(df_consolidated['Date'])
-            df_consolidated = df_consolidated.sort_values(['datetime', 'Symbol', 'Side']).drop('datetime', axis=1)
-        
+            df_consolidated['trade_key'] = (
+                df_consolidated['Symbol'].astype(str) + '_' + 
+                df_consolidated['Date'].astype(str) + '_' + 
+                df_consolidated['Side'].astype(str)
+            )
         # Save updated master file with proper sheet names
         with pd.ExcelWriter(master_file, engine='openpyxl') as writer:
             df_master.to_excel(writer, sheet_name='Trades', index=False)  # Position tracking
@@ -868,11 +889,11 @@ def reset_master_sheet():
         ])
         
         df_raw_trades = pd.DataFrame(columns=[
-            "Symbol", "Quantity", "Price", "Time", "Date"
+            "Symbol", "Quantity", "Side", "Price", "Time", "Date"
         ])
         
         df_consolidated = pd.DataFrame(columns=[
-            "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
+            "Symbol", "Quantity", "Side", "Avg_Price", "Time", "Date", "Total_Value"
         ])
         
         # Save empty master file
