@@ -15,7 +15,7 @@ yesterday = datetime.now() - timedelta(days=1)
 
 # Add at the top with other configurations
 TEST_MODE = False  # Set to True to use test files
-DEFAULT_TEST_DATE = "04.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
+DEFAULT_TEST_DATE = "06.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
 MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-trades.xlsx"
 MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
 PROCESSED_FILE = "processed_files_test.json" if TEST_MODE else "processed_files.json"
@@ -558,14 +558,22 @@ def update_master_sheet(consolidated_trades, folder_path):
             # Get Raw Trades sheet (formerly Trades)
             if 'Raw Trades' in all_sheets:
                 df_raw_trades = all_sheets['Raw Trades'].copy()
+                # Ensure we only keep the columns we want, in the right order
+                desired_columns = ["Symbol", "Quantity", "Price", "Time", "Date"]
+                # Keep only columns that exist and in our desired order
+                existing_columns = [col for col in desired_columns if col in df_raw_trades.columns]
+                df_raw_trades = df_raw_trades[existing_columns]
             elif 'Trades' in all_sheets and 'Symbol' in all_sheets['Trades'].columns and 'Date' in all_sheets['Trades'].columns:
                 # This is the old "Trades" sheet that should be "Raw Trades"
                 df_raw_trades = all_sheets['Trades'].copy()
+                # Reorder columns if they exist
+                if all(col in df_raw_trades.columns for col in ["Symbol", "Quantity", "Price", "Time", "Date"]):
+                    df_raw_trades = df_raw_trades[["Symbol", "Quantity", "Price", "Time", "Date"]]
             else:
                 df_raw_trades = pd.DataFrame(columns=[
-                    "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+                    "Symbol", "Quantity", "Price", "Time", "Date"
                 ])
-            
+        
             # Get Consolidated Trades sheet
             if 'Consolidated Trades' in all_sheets:
                 df_consolidated = all_sheets['Consolidated Trades'].copy()
@@ -582,7 +590,7 @@ def update_master_sheet(consolidated_trades, folder_path):
                 "Exit Time", "Exit Date"
             ])
             df_raw_trades = pd.DataFrame(columns=[
-                "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+                "Symbol", "Quantity", "Price", "Time", "Date"
             ])
             df_consolidated = pd.DataFrame(columns=[
                 "Symbol", "Date", "Time", "Side", "Quantity", "Avg_Price", "Total_Value"
@@ -648,11 +656,10 @@ def update_master_sheet(consolidated_trades, folder_path):
             if df_raw_trades.empty or raw_trade_key not in df_raw_trades['trade_key'].values:
                 new_raw_trade = {
                     "Symbol": trade['Symbol'],
-                    "Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d'),
-                    "Time": trade['Time'],
-                    "Side": trade['Side'],
                     "Quantity": trade['Quantity'],
-                    "Price": trade['Price']
+                    "Price": trade['Price'],
+                    "Time": trade['Time'],
+                    "Date": pd.to_datetime(trade['Date']).strftime('%Y-%m-%d')
                 }
                 new_raw_trades.append(new_raw_trade)
             
@@ -861,7 +868,7 @@ def reset_master_sheet():
         ])
         
         df_raw_trades = pd.DataFrame(columns=[
-            "Symbol", "Date", "Time", "Side", "Quantity", "Price"
+            "Symbol", "Quantity", "Price", "Time", "Date"
         ])
         
         df_consolidated = pd.DataFrame(columns=[
@@ -939,8 +946,10 @@ def main():
     print("📊 TRADE LOG FORMATTER")
     print("=" * 60)
     
-
-    choice = input("\n'RESET' or enter a date (e.g. 01.2025): ").strip()
+    # Get current month/year as default
+    current_month_year = datetime.now().strftime("%m.%Y")
+    
+    choice = input(f"\n'RESET' or enter a date (default: {current_month_year}): ").strip()
     
     if choice == 'RESET':
         confirm = input("⚠️  This will DELETE ALL trade data. Type 'y' to confirm: ").strip()
@@ -949,10 +958,10 @@ def main():
         else:
             print("❌ Reset cancelled")
     else:
-        if choice:
-            process_folder(choice)
-        else:
-            print("❌ Please enter a valid folder name")
+        # Use current month/year if no input provided
+        date_to_process = choice if choice else current_month_year
+        print(f"📅 Processing folder: {date_to_process}")
+        process_folder(date_to_process)
 
 if __name__ == "__main__":
     main()
