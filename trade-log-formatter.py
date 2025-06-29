@@ -8,13 +8,13 @@ import fitz  # PyMuPDF for PDF processing
 import csv
 
 # Configuration
-DEBUG = True  # Set to True to enable debug printing
+DEBUG = False  # Set to False to enable debug printing
 # Set default test date to yesterday
 yesterday = datetime.now() - timedelta(days=1)
 # DEFAULT_TEST_DATE = datetime.now().strftime("%m.%Y")
 
 # Add at the top with other configurations
-TEST_MODE = True  # Set to True to use test files
+TEST_MODE = False  # Set to True to use test files
 DEFAULT_TEST_DATE = "06.2025" if TEST_MODE else datetime.now().strftime("%m.%Y")
 MASTER_FILE = "master-copy-test.xlsx" if TEST_MODE else "master-trades.xlsx"
 MASTER_BACKUP = "master-copy-test-backup.xlsx" if TEST_MODE else "master-copy-backup.xlsx"
@@ -104,19 +104,42 @@ def extract_trades_from_pdf(file_path):
     trades = []
     try:
         doc = fitz.open(file_path)
-        print(f"\n📄 Processing: {os.path.basename(file_path)}")
+        print(f"\n📄 Processing: {os.path.basename(file_path)} ({len(doc)} pages)")
         
-        # Process ALL pages, not just the first one with USD
-        for page_num, page in enumerate(doc):
+        # Process ALL pages
+        for page_num in range(len(doc)):
+            page = doc[page_num]
             text = page.get_text()
             debug_print(f"  📄 Processing page {page_num + 1}")
             
-            # Look for USD sections on each page
-            sections = text.split('USD')
+            # Check if this page has any trade data
+            if 'U***' not in text:
+                debug_print(f"    ⏭️ No trade data found on page {page_num + 1}")
+                continue
             
-            # Process each USD section (skip the first split which is before first USD)
-            for section_num, section in enumerate(sections[1:], 1):
-                debug_print(f"    📋 Processing USD section {section_num} on page {page_num + 1}")
+            # For first page, look for USD sections
+            # For subsequent pages, process the entire page as continuation
+            if page_num == 0:
+                # Look for USD sections on first page only
+                sections = text.split('USD')
+                
+                if len(sections) <= 1:
+                    debug_print(f"    ⏭️ No USD sections found on page {page_num + 1}")
+                    continue
+                
+                # Process each USD section (skip the first split which is before first USD)
+                sections_to_process = sections[1:]
+            else:
+                # For continuation pages, process the entire page content
+                debug_print(f"    📋 Processing continuation page {page_num + 1}")
+                sections_to_process = [text]  # Process entire page as one section
+            
+            # Process sections
+            for section_num, section in enumerate(sections_to_process, 1):
+                if page_num == 0:
+                    debug_print(f"    📋 Processing USD section {section_num} on page {page_num + 1}")
+                else:
+                    debug_print(f"    📋 Processing continuation content on page {page_num + 1}")
                 
                 # End processing at Financial Instrument Information if found
                 if 'Financial Instrument Information' in section:
@@ -126,10 +149,21 @@ def extract_trades_from_pdf(file_path):
                 
                 lines = [line.strip() for line in relevant_text.splitlines() if line.strip()]
                 
+                if not lines:
+                    debug_print(f"      ⏭️ No lines found in section")
+                    continue
+                
                 i = 0
+                trades_found_in_section = 0
                 while i < len(lines):
                     if lines[i].startswith('U***'):
                         try:
+                            # Make sure we have enough lines
+                            if i + 7 >= len(lines):
+                                debug_print(f"      ⚠️ Not enough lines for trade at line {i}")
+                                i += 1
+                                continue
+                                
                             # Extract trade data from lines
                             account = lines[i]
                             symbol = lines[i+1]     # This might be an option symbol
@@ -157,22 +191,25 @@ def extract_trades_from_pdf(file_path):
                                     "Side": trade_type
                                 }
                                 
-                                debug_print(f"    Parsed Trade: {'LONG' if trade_data['Side'] == 'BUY' else 'SHORT'} {trade_data['Quantity']} "
+                                debug_print(f"      ✅ Parsed Trade: {'LONG' if trade_data['Side'] == 'BUY' else 'SHORT'} {trade_data['Quantity']} "
                                           f"{trade_data['Symbol']} @ ${trade_data['Price']:.2f} "
                                           f"({'Option' if is_option else 'Stock'}) [Page {page_num + 1}]")
                                 
                                 trades.append(trade_data)
+                                trades_found_in_section += 1
                             
                             # Skip to next potential transaction
                             i += 12
                         except (IndexError, ValueError) as e:
-                            print(f"  ⚠️ Error parsing trade at line {i} on page {page_num + 1}")
-                            print(f"  ⚠️ Error details: {str(e)}")
-                            print(f"  ⚠️ Current line content: {lines[i] if i < len(lines) else 'EOF'}")
+                            debug_print(f"      ⚠️ Error parsing trade at line {i} on page {page_num + 1}")
+                            debug_print(f"      ⚠️ Error details: {str(e)}")
+                            debug_print(f"      ⚠️ Current line content: {lines[i] if i < len(lines) else 'EOF'}")
                             i += 1
                     else:
                         i += 1
-                        
+                
+                debug_print(f"    📊 Found {trades_found_in_section} trades on page {page_num + 1}")
+        
         # Add summary at the end of each PDF
         if DEBUG:
             print("\n  📊 Debug Summary of Trades:")
@@ -593,7 +630,7 @@ def update_master_sheet(consolidated_trades, folder_path):
                 df_consolidated = all_sheets['Consolidated Trades'].copy()
             else:
                 df_consolidated = pd.DataFrame(columns=[
-                    "Symbol", "Quantity", "Side", "Avg_Price", "Time", "Date", "Total_Value"
+                    "Symbol", "Quantity", "Side", "Avg_Price", "Processed"
                 ])
                 
         else:
@@ -687,7 +724,7 @@ def update_master_sheet(consolidated_trades, folder_path):
             if 'trade_key' not in df_consolidated.columns:
                 df_consolidated['trade_key'] = (
                     df_consolidated['Symbol'].astype(str) + '_' + 
-                    df_consolidated['Date'].astype(str) + '_' + 
+                    df_consolidated['Processed'].astype(str) + '_' + 
                     df_consolidated[side_col].astype(str)
                 )
         
@@ -782,9 +819,7 @@ def update_master_sheet(consolidated_trades, folder_path):
                     "Quantity": group['total_qty'],
                     "Side": group['Side'],
                     "Avg_Price": avg_price,
-                    "Time": group['time'],
-                    "Date": group['Date'],
-                    "Total_Value": group['total_value']
+                    "Processed": pd.to_datetime(group['Date']).strftime('%Y-%m-%d')  # Using Date as Processed
                 }
                 
                 new_consolidated_trades.append(new_consolidated_trade)
@@ -954,7 +989,7 @@ def reset_master_sheet():
         ])
         
         df_consolidated = pd.DataFrame(columns=[
-            "Symbol", "Quantity", "Side", "Avg_Price", "Time", "Date", "Total_Value"
+            "Symbol", "Quantity", "Side", "Avg_Price", "Processed"
         ])
         
         # Save empty master file
